@@ -26,8 +26,8 @@ func NewPostService(
 	}
 }
 
-func (s *PostService) CreatePost(ctx context.Context, req domain.CreatePostRequest) (*domain.Post, error) {
-	post, err := domain.NewPost(req)
+func (s *PostService) CreatePost(ctx context.Context, title, description string, location domain.Location, radiusMeters int, postType domain.PostType, createdBy domain.UserID, organizationID *domain.OrganizationID) (*domain.Post, error) {
+	post, err := domain.NewPost(title, description, location, radiusMeters, postType, createdBy, organizationID)
 	if err != nil {
 		return nil, fmt.Errorf("invalid post data: %w", err)
 	}
@@ -36,18 +36,16 @@ func (s *PostService) CreatePost(ctx context.Context, req domain.CreatePostReque
 		return nil, fmt.Errorf("failed to save post: %w", err)
 	}
 
-	// Publish event
 	event := domain.NewPostEvent(
 		domain.EventTypePostCreated,
-		post.ID,
-		post.CreatedBy,
-		post.OrganizationID,
+		post.ID(),
+		post.CreatedBy(),
+		post.OrganizationID(),
 		&domain.PostCreatedEventData{Post: post},
 	)
 
 	if err := s.eventPublisher.PublishEvent(ctx, event); err != nil {
 		log.Printf("Failed to publish post created event: %v", err)
-		// Don't fail the operation if event publishing fails
 	}
 
 	return post, nil
@@ -73,14 +71,13 @@ func (s *PostService) GetPostsByUser(ctx context.Context, userID domain.UserID, 
 
 func (s *PostService) SearchNearbyPosts(ctx context.Context, location domain.Location, radiusMeters int, postType *domain.PostType, limit, offset int) ([]*domain.Post, error) {
 	if radiusMeters <= 0 {
-		radiusMeters = 1000 // Default to 1km
+		radiusMeters = 1000
 	}
 
 	if radiusMeters > 50000 {
-		radiusMeters = 50000 // Max 50km
+		radiusMeters = 50000
 	}
 
-	// Convert to Distance value object
 	radius := domain.Distance{Meters: float64(radiusMeters)}
 
 	posts, err := s.postRepo.FindNearby(ctx, location, radius, postType, limit, offset)
@@ -98,8 +95,8 @@ func (s *PostService) UpdatePost(ctx context.Context, id domain.PostID, title, d
 	}
 
 	previousData := map[string]interface{}{
-		"title":       post.Title,
-		"description": post.Description,
+		"title":       post.Title(),
+		"description": post.Description(),
 	}
 
 	if err := post.Update(title, description); err != nil {
@@ -112,15 +109,15 @@ func (s *PostService) UpdatePost(ctx context.Context, id domain.PostID, title, d
 
 	// Publish event
 	changes := map[string]interface{}{
-		"title":       post.Title,
-		"description": post.Description,
+		"title":       post.Title(),
+		"description": post.Description(),
 	}
 
 	event := domain.NewPostEvent(
 		domain.EventTypePostUpdated,
-		post.ID,
-		post.CreatedBy,
-		post.OrganizationID,
+		post.ID(),
+		post.CreatedBy(),
+		post.OrganizationID(),
 		&domain.PostUpdatedEventData{
 			Post:     post,
 			Changes:  changes,
@@ -141,7 +138,7 @@ func (s *PostService) UpdatePostStatus(ctx context.Context, id domain.PostID, ne
 		return nil, fmt.Errorf("failed to find post: %w", err)
 	}
 
-	previousStatus := post.Status
+	previousStatus := post.Status()
 
 	if err := post.UpdateStatus(newStatus); err != nil {
 		return nil, fmt.Errorf("failed to update post status: %w", err)
@@ -151,7 +148,6 @@ func (s *PostService) UpdatePostStatus(ctx context.Context, id domain.PostID, ne
 		return nil, fmt.Errorf("failed to save updated post: %w", err)
 	}
 
-	// Publish appropriate event
 	var eventType domain.EventType
 	switch newStatus {
 	case domain.PostStatusResolved:
@@ -164,11 +160,11 @@ func (s *PostService) UpdatePostStatus(ctx context.Context, id domain.PostID, ne
 
 	event := domain.NewPostEvent(
 		eventType,
-		post.ID,
-		post.CreatedBy,
-		post.OrganizationID,
+		post.ID(),
+		post.CreatedBy(),
+		post.OrganizationID(),
 		&domain.PostStatusChangedEventData{
-			PostID:         post.ID,
+			PostID:         post.ID(),
 			NewStatus:      newStatus,
 			PreviousStatus: previousStatus,
 		},
@@ -191,16 +187,15 @@ func (s *PostService) DeletePost(ctx context.Context, id domain.PostID) error {
 		return fmt.Errorf("failed to delete post: %w", err)
 	}
 
-	// Publish event
 	event := domain.NewPostEvent(
 		domain.EventTypePostDeleted,
-		post.ID,
-		post.CreatedBy,
-		post.OrganizationID,
+		post.ID(),
+		post.CreatedBy(),
+		post.OrganizationID(),
 		&domain.PostStatusChangedEventData{
-			PostID:         post.ID,
+			PostID:         post.ID(),
 			NewStatus:      domain.PostStatusDeleted,
-			PreviousStatus: post.Status,
+			PreviousStatus: post.Status(),
 		},
 	)
 
@@ -217,12 +212,12 @@ func (s *PostService) AddPhotoToPost(ctx context.Context, postID domain.PostID, 
 		return nil, fmt.Errorf("failed to find post: %w", err)
 	}
 
-	if len(post.Photos) >= 10 {
-		return nil, domain.ErrInvalidPhotoCount
+	if len(post.Photos()) >= 10 {
+		return nil, domain.ErrInvalidPhotoCount(len(post.Photos()))
 	}
 
 	photoReq.PostID = postID
-	photoReq.DisplayOrder = len(post.Photos) + 1
+	photoReq.DisplayOrder = len(post.Photos()) + 1
 
 	photo, err := domain.NewPhoto(photoReq)
 	if err != nil {
@@ -233,7 +228,6 @@ func (s *PostService) AddPhotoToPost(ctx context.Context, postID domain.PostID, 
 		return nil, fmt.Errorf("failed to save photo: %w", err)
 	}
 
-	// Update post to include the new photo
 	if err := post.AddPhoto(*photo); err != nil {
 		return nil, fmt.Errorf("failed to add photo to post: %w", err)
 	}
@@ -242,14 +236,13 @@ func (s *PostService) AddPhotoToPost(ctx context.Context, postID domain.PostID, 
 		return nil, fmt.Errorf("failed to update post: %w", err)
 	}
 
-	// Publish event
 	event := domain.NewPostEvent(
 		domain.EventTypePhotoAdded,
-		post.ID,
-		post.CreatedBy,
-		post.OrganizationID,
+		post.ID(),
+		post.CreatedBy(),
+		post.OrganizationID(),
 		&domain.PhotoEventData{
-			PostID: post.ID,
+			PostID: post.ID(),
 			Photo:  photo,
 		},
 	)
@@ -272,11 +265,11 @@ func (s *PostService) RemovePhotoFromPost(ctx context.Context, postID domain.Pos
 		return fmt.Errorf("failed to find photo: %w", err)
 	}
 
-	if !photo.PostID.Equals(postID) {
+	if !photo.PostID().Equals(postID) {
 		return fmt.Errorf("photo does not belong to this post")
 	}
 
-	if len(post.Photos) <= 1 {
+	if len(post.Photos()) <= 1 {
 		return fmt.Errorf("cannot remove last photo from post")
 	}
 
@@ -284,7 +277,6 @@ func (s *PostService) RemovePhotoFromPost(ctx context.Context, postID domain.Pos
 		return fmt.Errorf("failed to delete photo: %w", err)
 	}
 
-	// Update post to remove the photo
 	if err := post.RemovePhoto(photoID); err != nil {
 		return fmt.Errorf("failed to remove photo from post: %w", err)
 	}
@@ -293,14 +285,13 @@ func (s *PostService) RemovePhotoFromPost(ctx context.Context, postID domain.Pos
 		return fmt.Errorf("failed to update post: %w", err)
 	}
 
-	// Publish event
 	event := domain.NewPostEvent(
 		domain.EventTypePhotoRemoved,
-		post.ID,
-		post.CreatedBy,
-		post.OrganizationID,
+		post.ID(),
+		post.CreatedBy(),
+		post.OrganizationID(),
 		&domain.PhotoEventData{
-			PostID: post.ID,
+			PostID: post.ID(),
 			Photo:  photo,
 		},
 	)

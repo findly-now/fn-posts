@@ -20,90 +20,106 @@ const (
 	PostStatusDeleted  PostStatus = "deleted"
 )
 
-var (
-	ErrInvalidPostType        = errors.New("invalid post type")
-	ErrInvalidPostStatus      = errors.New("invalid post status")
-	ErrInvalidPhotoCount      = errors.New("post must have between 1 and 10 photos")
-	ErrInvalidTitle           = errors.New("title cannot be empty")
-	ErrInvalidLocation        = errors.New("invalid location coordinates")
-	ErrCannotTransitionStatus = errors.New("invalid status transition")
-)
-
 type Post struct {
-	ID             PostID          `json:"id"`
-	Title          string          `json:"title"`
-	Description    string          `json:"description"`
-	Photos         []Photo         `json:"photos"`
-	Location       Location        `json:"location"`
-	RadiusMeters   int             `json:"radius_meters"`
-	Status         PostStatus      `json:"status"`
-	Type           PostType        `json:"type"`
-	CreatedBy      UserID          `json:"created_by"`
-	OrganizationID *OrganizationID `json:"organization_id,omitempty"`
-	CreatedAt      time.Time       `json:"created_at"`
-	UpdatedAt      time.Time       `json:"updated_at"`
+	id             PostID
+	title          string
+	description    string
+	photos         []Photo
+	location       Location
+	radiusMeters   int
+	status         PostStatus
+	postType       PostType
+	createdBy      UserID
+	organizationID *OrganizationID
+	createdAt      time.Time
+	updatedAt      time.Time
 }
 
-type CreatePostRequest struct {
-	Title          string          `json:"title" binding:"required,min=1,max=200"`
-	Description    string          `json:"description" binding:"max=2000"`
-	Location       Location        `json:"location" binding:"required"`
-	RadiusMeters   int             `json:"radius_meters" binding:"min=100,max=50000"`
-	Type           PostType        `json:"type" binding:"required"`
-	CreatedBy      UserID          `json:"created_by" binding:"required"`
-	OrganizationID *OrganizationID `json:"organization_id,omitempty"`
-}
-
-func NewPost(req CreatePostRequest) (*Post, error) {
-	if err := validatePostType(req.Type); err != nil {
+func NewPost(
+	title, description string,
+	location Location,
+	radiusMeters int,
+	postType PostType,
+	createdBy UserID,
+	organizationID *OrganizationID,
+) (*Post, error) {
+	if err := validatePostType(postType); err != nil {
 		return nil, err
 	}
 
-	if req.Title == "" {
-		return nil, ErrInvalidTitle
+	if title == "" {
+		return nil, ErrInvalidTitle()
 	}
 
-	if err := req.Location.Validate(); err != nil {
+	if err := location.Validate(); err != nil {
 		return nil, err
 	}
 
-	if req.RadiusMeters < 100 || req.RadiusMeters > 50000 {
-		req.RadiusMeters = 1000 // Default to 1km
+	if radiusMeters < 100 || radiusMeters > 50000 {
+		radiusMeters = 1000
 	}
 
 	now := time.Now()
 
 	return &Post{
-		ID:             NewPostID(),
-		Title:          req.Title,
-		Description:    req.Description,
-		Photos:         []Photo{},
-		Location:       req.Location,
-		RadiusMeters:   req.RadiusMeters,
-		Status:         PostStatusActive,
-		Type:           req.Type,
-		CreatedBy:      req.CreatedBy,
-		OrganizationID: req.OrganizationID,
-		CreatedAt:      now,
-		UpdatedAt:      now,
+		id:             NewPostID(),
+		title:          title,
+		description:    description,
+		photos:         []Photo{},
+		location:       location,
+		radiusMeters:   radiusMeters,
+		status:         PostStatusActive,
+		postType:       postType,
+		createdBy:      createdBy,
+		organizationID: organizationID,
+		createdAt:      now,
+		updatedAt:      now,
 	}, nil
 }
 
+func ReconstructPost(
+	id PostID,
+	title, description string,
+	location Location,
+	radiusMeters int,
+	status PostStatus,
+	postType PostType,
+	createdBy UserID,
+	organizationID *OrganizationID,
+	createdAt, updatedAt time.Time,
+	photos []Photo,
+) *Post {
+	return &Post{
+		id:             id,
+		title:          title,
+		description:    description,
+		photos:         photos,
+		location:       location,
+		radiusMeters:   radiusMeters,
+		status:         status,
+		postType:       postType,
+		createdBy:      createdBy,
+		organizationID: organizationID,
+		createdAt:      createdAt,
+		updatedAt:      updatedAt,
+	}
+}
+
 func (p *Post) AddPhoto(photo Photo) error {
-	if len(p.Photos) >= 10 {
-		return ErrInvalidPhotoCount
+	if len(p.photos) >= 10 {
+		return ErrInvalidPhotoCount(len(p.photos))
 	}
 
-	p.Photos = append(p.Photos, photo)
-	p.UpdatedAt = time.Now()
+	p.photos = append(p.photos, photo)
+	p.updatedAt = time.Now()
 	return nil
 }
 
 func (p *Post) RemovePhoto(photoID PhotoID) error {
-	for i, photo := range p.Photos {
-		if photo.ID.Equals(photoID) {
-			p.Photos = append(p.Photos[:i], p.Photos[i+1:]...)
-			p.UpdatedAt = time.Now()
+	for i, photo := range p.photos {
+		if photo.ID().Equals(photoID) {
+			p.photos = append(p.photos[:i], p.photos[i+1:]...)
+			p.updatedAt = time.Now()
 			return nil
 		}
 	}
@@ -115,24 +131,24 @@ func (p *Post) UpdateStatus(newStatus PostStatus) error {
 		return err
 	}
 
-	p.Status = newStatus
-	p.UpdatedAt = time.Now()
+	p.status = newStatus
+	p.updatedAt = time.Now()
 	return nil
 }
 
 func (p *Post) Update(title, description string) error {
 	if title == "" {
-		return ErrInvalidTitle
+		return ErrInvalidTitle()
 	}
 
-	p.Title = title
-	p.Description = description
-	p.UpdatedAt = time.Now()
+	p.title = title
+	p.description = description
+	p.updatedAt = time.Now()
 	return nil
 }
 
 func (p *Post) IsExpired(expiryDuration time.Duration) bool {
-	return time.Since(p.CreatedAt) > expiryDuration
+	return time.Since(p.createdAt) > expiryDuration
 }
 
 func (p *Post) validateStatusTransition(newStatus PostStatus) error {
@@ -140,12 +156,12 @@ func (p *Post) validateStatusTransition(newStatus PostStatus) error {
 		PostStatusActive:   {PostStatusResolved, PostStatusExpired, PostStatusDeleted},
 		PostStatusResolved: {PostStatusActive, PostStatusDeleted},
 		PostStatusExpired:  {PostStatusActive, PostStatusDeleted},
-		PostStatusDeleted:  {}, // No transitions from deleted
+		PostStatusDeleted:  {},
 	}
 
-	allowedStatuses, exists := validTransitions[p.Status]
+	allowedStatuses, exists := validTransitions[p.status]
 	if !exists {
-		return ErrCannotTransitionStatus
+		return ErrCannotTransitionStatus(p.status, newStatus)
 	}
 
 	for _, allowed := range allowedStatuses {
@@ -154,7 +170,7 @@ func (p *Post) validateStatusTransition(newStatus PostStatus) error {
 		}
 	}
 
-	return ErrCannotTransitionStatus
+	return ErrCannotTransitionStatus(p.status, newStatus)
 }
 
 func validatePostType(postType PostType) error {
@@ -162,7 +178,7 @@ func validatePostType(postType PostType) error {
 	case PostTypeLost, PostTypeFound:
 		return nil
 	default:
-		return ErrInvalidPostType
+		return ErrInvalidPostType(string(postType))
 	}
 }
 
@@ -173,4 +189,52 @@ func (ps PostStatus) IsValid() bool {
 	default:
 		return false
 	}
+}
+
+func (p *Post) ID() PostID {
+	return p.id
+}
+
+func (p *Post) Title() string {
+	return p.title
+}
+
+func (p *Post) Description() string {
+	return p.description
+}
+
+func (p *Post) Photos() []Photo {
+	return p.photos
+}
+
+func (p *Post) Location() Location {
+	return p.location
+}
+
+func (p *Post) RadiusMeters() int {
+	return p.radiusMeters
+}
+
+func (p *Post) Status() PostStatus {
+	return p.status
+}
+
+func (p *Post) PostType() PostType {
+	return p.postType
+}
+
+func (p *Post) CreatedBy() UserID {
+	return p.createdBy
+}
+
+func (p *Post) OrganizationID() *OrganizationID {
+	return p.organizationID
+}
+
+func (p *Post) CreatedAt() time.Time {
+	return p.createdAt
+}
+
+func (p *Post) UpdatedAt() time.Time {
+	return p.updatedAt
 }

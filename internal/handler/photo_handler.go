@@ -11,7 +11,6 @@ import (
 	"github.com/jsarabia/fn-posts/internal/service"
 )
 
-
 type PhotoHandler struct {
 	postService *service.PostService
 	storage     StorageInterface
@@ -112,12 +111,12 @@ func (h *PhotoHandler) UploadPhoto(c *gin.Context) {
 
 		uploadedPhotos = append(uploadedPhotos, UploadPhotoResponse{
 			Photo: PhotoResponse{
-				ID:           photo.ID.UUID(),
-				URL:          photo.URL,
-				ThumbnailURL: photo.ThumbnailURL,
-				Caption:      photo.Caption,
-				DisplayOrder: photo.DisplayOrder,
-				CreatedAt:    photo.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
+				ID:           photo.ID().UUID(),
+				URL:          photo.URL(),
+				ThumbnailURL: photo.ThumbnailURL(),
+				Caption:      photo.Caption(),
+				DisplayOrder: photo.DisplayOrder(),
+				CreatedAt:    photo.CreatedAt().Format("2006-01-02T15:04:05Z07:00"),
 			},
 			URL: result.URL,
 		})

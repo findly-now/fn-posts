@@ -5,8 +5,8 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/stretchr/testify/require"
 	"github.com/jsarabia/fn-posts/internal/domain"
+	"github.com/stretchr/testify/require"
 )
 
 func TestCreatePost(t *testing.T) {

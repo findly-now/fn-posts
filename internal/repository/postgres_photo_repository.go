@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"time"
 
 	"github.com/jsarabia/fn-posts/internal/domain"
 )
@@ -46,13 +47,18 @@ func (r *PostgresPhotoRepository) FindByID(ctx context.Context, id domain.PhotoI
 
 	row := r.db.QueryRowContext(ctx, query, id)
 
-	var photo domain.Photo
+	var photoID domain.PhotoID
+	var postID domain.PostID
+	var url, caption, format string
+	var displayOrder int
+	var sizeBytes int64
+	var createdAt time.Time
 	var thumbnailURL sql.NullString
 
 	err := row.Scan(
-		&photo.ID, &photo.PostID, &photo.URL, &thumbnailURL,
-		&photo.Caption, &photo.DisplayOrder, &photo.Format,
-		&photo.SizeBytes, &photo.CreatedAt,
+		&photoID, &postID, &url, &thumbnailURL,
+		&caption, &displayOrder, &format,
+		&sizeBytes, &createdAt,
 	)
 
 	if err != nil {
@@ -62,11 +68,17 @@ func (r *PostgresPhotoRepository) FindByID(ctx context.Context, id domain.PhotoI
 		return nil, fmt.Errorf("failed to find photo: %w", err)
 	}
 
+	var thumbnailURLStr string
 	if thumbnailURL.Valid {
-		photo.ThumbnailURL = thumbnailURL.String
+		thumbnailURLStr = thumbnailURL.String
 	}
 
-	return &photo, nil
+	photo := domain.ReconstructPhoto(
+		photoID, postID, url, thumbnailURLStr, caption,
+		displayOrder, format, sizeBytes, createdAt,
+	)
+
+	return photo, nil
 }
 
 func (r *PostgresPhotoRepository) FindByPostID(ctx context.Context, postID domain.PostID) ([]*domain.Photo, error) {
@@ -85,24 +97,35 @@ func (r *PostgresPhotoRepository) FindByPostID(ctx context.Context, postID domai
 
 	var photos []*domain.Photo
 	for rows.Next() {
-		var photo domain.Photo
+		var photoID domain.PhotoID
+		var postID domain.PostID
+		var url, caption, format string
+		var displayOrder int
+		var sizeBytes int64
+		var createdAt time.Time
 		var thumbnailURL sql.NullString
 
 		err := rows.Scan(
-			&photo.ID, &photo.PostID, &photo.URL, &thumbnailURL,
-			&photo.Caption, &photo.DisplayOrder, &photo.Format,
-			&photo.SizeBytes, &photo.CreatedAt,
+			&photoID, &postID, &url, &thumbnailURL,
+			&caption, &displayOrder, &format,
+			&sizeBytes, &createdAt,
 		)
 
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan photo: %w", err)
 		}
 
+		var thumbnailURLStr string
 		if thumbnailURL.Valid {
-			photo.ThumbnailURL = thumbnailURL.String
+			thumbnailURLStr = thumbnailURL.String
 		}
 
-		photos = append(photos, &photo)
+		photo := domain.ReconstructPhoto(
+			photoID, postID, url, thumbnailURLStr, caption,
+			displayOrder, format, sizeBytes, createdAt,
+		)
+
+		photos = append(photos, photo)
 	}
 
 	return photos, nil

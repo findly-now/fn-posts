@@ -13,11 +13,11 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	_ "github.com/lib/pq"
 	"github.com/jsarabia/fn-posts/internal/config"
 	"github.com/jsarabia/fn-posts/internal/handler"
 	"github.com/jsarabia/fn-posts/internal/repository"
 	"github.com/jsarabia/fn-posts/internal/service"
+	_ "github.com/lib/pq"
 )
 
 func main() {

@@ -12,12 +12,12 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/stretchr/testify/require"
 	"github.com/jsarabia/fn-posts/internal/domain"
+	"github.com/stretchr/testify/require"
 )
 
 const (
-	BaseURL = "http://localhost:8081/api/v1"
+	BaseURL    = "http://localhost:8081/api/v1"
 	TestUserID = "550e8400-e29b-41d4-a716-446655440001"
 )
 

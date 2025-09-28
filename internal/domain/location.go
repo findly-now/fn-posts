@@ -1,23 +1,17 @@
 package domain
 
 import (
-	"errors"
 	"fmt"
 	"math"
 )
 
-var (
-	ErrInvalidLatitude  = errors.New("latitude must be between -90 and 90")
-	ErrInvalidLongitude = errors.New("longitude must be between -180 and 180")
-)
-
 type Location struct {
-	Latitude  float64 `json:"latitude" binding:"required,min=-90,max=90"`
-	Longitude float64 `json:"longitude" binding:"required,min=-180,max=180"`
+	Latitude  float64
+	Longitude float64
 }
 
 type Distance struct {
-	Meters float64 `json:"meters"`
+	Meters float64
 }
 
 func NewLocation(latitude, longitude float64) (Location, error) {
@@ -35,11 +29,11 @@ func NewLocation(latitude, longitude float64) (Location, error) {
 
 func (l Location) Validate() error {
 	if l.Latitude < -90 || l.Latitude > 90 {
-		return ErrInvalidLatitude
+		return ErrInvalidLatitude(l.Latitude)
 	}
 
 	if l.Longitude < -180 || l.Longitude > 180 {
-		return ErrInvalidLongitude
+		return ErrInvalidLongitude(l.Longitude)
 	}
 
 	return nil

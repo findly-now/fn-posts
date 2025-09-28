@@ -1,4 +1,4 @@
-.PHONY: build run test clean docker-up docker-down migrate-up migrate-down e2e-test e2e-up e2e-down e2e-logs
+.PHONY: build run clean docker-up docker-down deploy-schema e2e-test e2e-up e2e-down e2e-logs fmt lint tidy install-deps dev help e2e-test-only e2e-test-coverage
 
 # Build the application
 build:
@@ -8,14 +8,7 @@ build:
 run:
 	go run cmd/main.go
 
-# Run tests
-test:
-	go test -v ./...
-
-# Run tests with coverage
-test-coverage:
-	go test -v -coverprofile=coverage.out ./...
-	go tool cover -html=coverage.out -o coverage.html
+# Note: This service uses E2E tests only - no unit tests
 
 # Clean build artifacts
 clean:
@@ -29,21 +22,11 @@ docker-up:
 docker-down:
 	docker-compose down
 
-# Run database migrations up
-migrate-up:
-	@echo "Running database migrations..."
-	@for file in migrations/*.up.sql; do \
-		echo "Applying $$file"; \
-		psql $(DATABASE_URL) -f $$file; \
-	done
-
-# Run database migrations down
-migrate-down:
-	@echo "Rolling back database migrations..."
-	@for file in $$(ls migrations/*.down.sql | sort -r); do \
-		echo "Rolling back $$file"; \
-		psql $(DATABASE_URL) -f $$file; \
-	done
+# Deploy database schema using script.sql
+deploy-schema:
+	@echo "Deploying database schema..."
+	psql "$(DATABASE_URL)" -f script.sql
+	@echo "✅ Database schema deployed"
 
 # Format code
 fmt:
@@ -133,8 +116,6 @@ help:
 	@echo "  docker-down    Stop local development environment"
 	@echo ""
 	@echo "Testing:"
-	@echo "  test           Run unit tests (deprecated - use E2E tests)"
-	@echo "  test-coverage  Run tests with coverage report"
 	@echo "  e2e-test       Run complete E2E test suite (recommended)"
 	@echo "  e2e-up         Start E2E test environment"
 	@echo "  e2e-down       Stop E2E test environment"
@@ -142,8 +123,7 @@ help:
 	@echo "  e2e-logs       View E2E environment logs"
 	@echo ""
 	@echo "Database:"
-	@echo "  migrate-up     Run database migrations"
-	@echo "  migrate-down   Rollback database migrations"
+	@echo "  deploy-schema  Deploy database schema using script.sql"
 	@echo ""
 	@echo "Code Quality:"
 	@echo "  fmt            Format code"

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/jsarabia/fn-posts/internal/domain"
 	_ "github.com/lib/pq"
@@ -30,18 +31,18 @@ func (r *PostgresPostRepository) Save(ctx context.Context, post *domain.Post) er
 
 	_, err := r.db.ExecContext(
 		ctx, query,
-		post.ID, post.Title, post.Description,
-		post.Location.Longitude, post.Location.Latitude, post.RadiusMeters,
-		post.Status, post.Type, post.CreatedBy, post.OrganizationID,
-		post.CreatedAt, post.UpdatedAt,
+		post.ID(), post.Title(), post.Description(),
+		post.Location().Longitude, post.Location().Latitude, post.RadiusMeters(),
+		post.Status(), post.PostType(), post.CreatedBy(), post.OrganizationID(),
+		post.CreatedAt(), post.UpdatedAt(),
 	)
 
 	if err != nil {
-		return fmt.Errorf("failed to save post: %w", err)
+		return domain.ErrRepositoryConnection("save post").WithCause(err)
 	}
 
 	// Save photos if any
-	for _, photo := range post.Photos {
+	for _, photo := range post.Photos() {
 		if err := r.savePhoto(ctx, &photo); err != nil {
 			return fmt.Errorf("failed to save photo: %w", err)
 		}
@@ -63,12 +64,34 @@ func (r *PostgresPostRepository) FindByID(ctx context.Context, id domain.PostID)
 
 	row := r.db.QueryRowContext(ctx, query, id)
 
-	post, err := r.scanPost(row)
+	var postID domain.PostID
+	var title, description string
+	var longitude, latitude float64
+	var radiusMeters int
+	var status domain.PostStatus
+	var postType domain.PostType
+	var createdBy domain.UserID
+	var organizationID *domain.OrganizationID
+	var createdAt, updatedAt time.Time
+
+	err := row.Scan(
+		&postID, &title, &description,
+		&longitude, &latitude,
+		&radiusMeters, &status, &postType,
+		&createdBy, &organizationID,
+		&createdAt, &updatedAt,
+	)
+
 	if err != nil {
 		if err == sql.ErrNoRows {
-			return nil, fmt.Errorf("post not found")
+			return nil, domain.ErrPostNotFound(id)
 		}
-		return nil, fmt.Errorf("failed to find post: %w", err)
+		return nil, domain.ErrRepositoryConnection("find post").WithCause(err)
+	}
+
+	location := domain.Location{
+		Latitude:  latitude,
+		Longitude: longitude,
 	}
 
 	// Load photos
@@ -76,7 +99,12 @@ func (r *PostgresPostRepository) FindByID(ctx context.Context, id domain.PostID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load photos: %w", err)
 	}
-	post.Photos = photos
+
+	post := domain.ReconstructPost(
+		postID, title, description, location, radiusMeters,
+		status, postType, createdBy, organizationID,
+		createdAt, updatedAt, photos,
+	)
 
 	return post, nil
 }
@@ -151,9 +179,9 @@ func (r *PostgresPostRepository) Update(ctx context.Context, post *domain.Post) 
 
 	result, err := r.db.ExecContext(
 		ctx, query,
-		post.ID, post.Title, post.Description,
-		post.Location.Longitude, post.Location.Latitude,
-		post.RadiusMeters, post.Status, post.UpdatedAt,
+		post.ID(), post.Title(), post.Description(),
+		post.Location().Longitude, post.Location().Latitude,
+		post.RadiusMeters(), post.Status(), post.UpdatedAt(),
 	)
 
 	if err != nil {
@@ -314,61 +342,86 @@ func (r *PostgresPostRepository) buildCountQuery(filters domain.PostFilters) (st
 }
 
 func (r *PostgresPostRepository) scanPost(row *sql.Row) (*domain.Post, error) {
-	var post domain.Post
+	var id domain.PostID
+	var title, description string
 	var longitude, latitude float64
+	var radiusMeters int
+	var status domain.PostStatus
+	var postType domain.PostType
+	var createdBy domain.UserID
+	var organizationID *domain.OrganizationID
+	var createdAt, updatedAt time.Time
 
 	err := row.Scan(
-		&post.ID, &post.Title, &post.Description,
+		&id, &title, &description,
 		&longitude, &latitude,
-		&post.RadiusMeters, &post.Status, &post.Type,
-		&post.CreatedBy, &post.OrganizationID,
-		&post.CreatedAt, &post.UpdatedAt,
+		&radiusMeters, &status, &postType,
+		&createdBy, &organizationID,
+		&createdAt, &updatedAt,
 	)
 
 	if err != nil {
 		return nil, err
 	}
 
-	post.Location = domain.Location{
+	location := domain.Location{
 		Latitude:  latitude,
 		Longitude: longitude,
 	}
 
-	return &post, nil
+	post := domain.ReconstructPost(
+		id, title, description, location, radiusMeters,
+		status, postType, createdBy, organizationID,
+		createdAt, updatedAt, []domain.Photo{},
+	)
+
+	return post, nil
 }
 
 func (r *PostgresPostRepository) scanPosts(ctx context.Context, rows *sql.Rows) ([]*domain.Post, error) {
 	var posts []*domain.Post
 
 	for rows.Next() {
-		var post domain.Post
+		var id domain.PostID
+		var title, description string
 		var longitude, latitude float64
+		var radiusMeters int
+		var status domain.PostStatus
+		var postType domain.PostType
+		var createdBy domain.UserID
+		var organizationID *domain.OrganizationID
+		var createdAt, updatedAt time.Time
 
 		err := rows.Scan(
-			&post.ID, &post.Title, &post.Description,
+			&id, &title, &description,
 			&longitude, &latitude,
-			&post.RadiusMeters, &post.Status, &post.Type,
-			&post.CreatedBy, &post.OrganizationID,
-			&post.CreatedAt, &post.UpdatedAt,
+			&radiusMeters, &status, &postType,
+			&createdBy, &organizationID,
+			&createdAt, &updatedAt,
 		)
 
 		if err != nil {
 			return nil, err
 		}
 
-		post.Location = domain.Location{
+		location := domain.Location{
 			Latitude:  latitude,
 			Longitude: longitude,
 		}
 
 		// Load photos for each post
-		photos, err := r.findPhotosByPostID(ctx, post.ID)
+		photos, err := r.findPhotosByPostID(ctx, id)
 		if err != nil {
-			return nil, fmt.Errorf("failed to load photos for post %s: %w", post.ID, err)
+			return nil, fmt.Errorf("failed to load photos for post %s: %w", id, err)
 		}
-		post.Photos = photos
 
-		posts = append(posts, &post)
+		post := domain.ReconstructPost(
+			id, title, description, location, radiusMeters,
+			status, postType, createdBy, organizationID,
+			createdAt, updatedAt, photos,
+		)
+
+		posts = append(posts, post)
 	}
 
 	return posts, nil
@@ -378,15 +431,22 @@ func (r *PostgresPostRepository) scanPostsWithDistance(ctx context.Context, rows
 	var posts []*domain.Post
 
 	for rows.Next() {
-		var post domain.Post
+		var id domain.PostID
+		var title, description string
 		var longitude, latitude, distance float64
+		var radiusMeters int
+		var status domain.PostStatus
+		var postType domain.PostType
+		var createdBy domain.UserID
+		var organizationID *domain.OrganizationID
+		var createdAt, updatedAt time.Time
 
 		err := rows.Scan(
-			&post.ID, &post.Title, &post.Description,
+			&id, &title, &description,
 			&longitude, &latitude,
-			&post.RadiusMeters, &post.Status, &post.Type,
-			&post.CreatedBy, &post.OrganizationID,
-			&post.CreatedAt, &post.UpdatedAt,
+			&radiusMeters, &status, &postType,
+			&createdBy, &organizationID,
+			&createdAt, &updatedAt,
 			&distance,
 		)
 
@@ -394,19 +454,24 @@ func (r *PostgresPostRepository) scanPostsWithDistance(ctx context.Context, rows
 			return nil, err
 		}
 
-		post.Location = domain.Location{
+		location := domain.Location{
 			Latitude:  latitude,
 			Longitude: longitude,
 		}
 
 		// Load photos for each post
-		photos, err := r.findPhotosByPostID(ctx, post.ID)
+		photos, err := r.findPhotosByPostID(ctx, id)
 		if err != nil {
-			return nil, fmt.Errorf("failed to load photos for post %s: %w", post.ID, err)
+			return nil, fmt.Errorf("failed to load photos for post %s: %w", id, err)
 		}
-		post.Photos = photos
 
-		posts = append(posts, &post)
+		post := domain.ReconstructPost(
+			id, title, description, location, radiusMeters,
+			status, postType, createdBy, organizationID,
+			createdAt, updatedAt, photos,
+		)
+
+		posts = append(posts, post)
 	}
 
 	return posts, nil
@@ -421,9 +486,9 @@ func (r *PostgresPostRepository) savePhoto(ctx context.Context, photo *domain.Ph
 
 	_, err := r.db.ExecContext(
 		ctx, query,
-		photo.ID, photo.PostID, photo.URL, photo.ThumbnailURL,
-		photo.Caption, photo.DisplayOrder, photo.Format,
-		photo.SizeBytes, photo.CreatedAt,
+		photo.ID(), photo.PostID(), photo.URL(), photo.ThumbnailURL(),
+		photo.Caption(), photo.DisplayOrder(), photo.Format(),
+		photo.SizeBytes(), photo.CreatedAt(),
 	)
 
 	return err
@@ -445,24 +510,37 @@ func (r *PostgresPostRepository) findPhotosByPostID(ctx context.Context, postID 
 
 	var photos []domain.Photo
 	for rows.Next() {
-		var photo domain.Photo
+		var photoID domain.PhotoID
+		var postID domain.PostID
+		var url string
 		var thumbnailURL sql.NullString
+		var caption string
+		var displayOrder int
+		var format string
+		var sizeBytes int64
+		var createdAt time.Time
 
 		err := rows.Scan(
-			&photo.ID, &photo.PostID, &photo.URL, &thumbnailURL,
-			&photo.Caption, &photo.DisplayOrder, &photo.Format,
-			&photo.SizeBytes, &photo.CreatedAt,
+			&photoID, &postID, &url, &thumbnailURL,
+			&caption, &displayOrder, &format,
+			&sizeBytes, &createdAt,
 		)
 
 		if err != nil {
 			return nil, err
 		}
 
+		thumbnailURLStr := ""
 		if thumbnailURL.Valid {
-			photo.ThumbnailURL = thumbnailURL.String
+			thumbnailURLStr = thumbnailURL.String
 		}
 
-		photos = append(photos, photo)
+		photo := domain.ReconstructPhoto(
+			photoID, postID, url, thumbnailURLStr, caption,
+			displayOrder, format, sizeBytes, createdAt,
+		)
+
+		photos = append(photos, *photo)
 	}
 
 	return photos, nil

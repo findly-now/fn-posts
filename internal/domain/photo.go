@@ -6,36 +6,30 @@ import (
 	"time"
 )
 
-var (
-	ErrInvalidPhotoURL     = errors.New("invalid photo URL")
-	ErrInvalidPhotoFormat  = errors.New("invalid photo format")
-	ErrInvalidDisplayOrder = errors.New("invalid display order")
-)
-
 type Photo struct {
-	ID           PhotoID   `json:"id"`
-	PostID       PostID    `json:"post_id"`
-	URL          string    `json:"url"`
-	ThumbnailURL string    `json:"thumbnail_url,omitempty"`
-	Caption      string    `json:"caption,omitempty"`
-	DisplayOrder int       `json:"display_order"`
-	Format       string    `json:"format"`
-	SizeBytes    int64     `json:"size_bytes"`
-	CreatedAt    time.Time `json:"created_at"`
+	id           PhotoID
+	postID       PostID
+	url          string
+	thumbnailURL string
+	caption      string
+	displayOrder int
+	format       string
+	sizeBytes    int64
+	createdAt    time.Time
 }
 
 type CreatePhotoRequest struct {
-	PostID       PostID `json:"post_id" binding:"required"`
-	URL          string `json:"url" binding:"required"`
-	Caption      string `json:"caption" binding:"max=500"`
-	DisplayOrder int    `json:"display_order" binding:"min=1,max=10"`
-	Format       string `json:"format" binding:"required"`
-	SizeBytes    int64  `json:"size_bytes" binding:"min=1"`
+	PostID       PostID
+	URL          string
+	Caption      string
+	DisplayOrder int
+	Format       string
+	SizeBytes    int64
 }
 
 func NewPhoto(req CreatePhotoRequest) (*Photo, error) {
 	if req.URL == "" {
-		return nil, ErrInvalidPhotoURL
+		return nil, ErrInvalidPhotoURL(req.URL)
 	}
 
 	if err := validatePhotoFormat(req.Format); err != nil {
@@ -43,18 +37,18 @@ func NewPhoto(req CreatePhotoRequest) (*Photo, error) {
 	}
 
 	if req.DisplayOrder < 1 || req.DisplayOrder > 10 {
-		return nil, ErrInvalidDisplayOrder
+		return nil, ErrInvalidDisplayOrder(req.DisplayOrder)
 	}
 
 	return &Photo{
-		ID:           NewPhotoID(),
-		PostID:       req.PostID,
-		URL:          req.URL,
-		Caption:      req.Caption,
-		DisplayOrder: req.DisplayOrder,
-		Format:       strings.ToLower(req.Format),
-		SizeBytes:    req.SizeBytes,
-		CreatedAt:    time.Now(),
+		id:           NewPhotoID(),
+		postID:       req.PostID,
+		url:          req.URL,
+		caption:      req.Caption,
+		displayOrder: req.DisplayOrder,
+		format:       strings.ToLower(req.Format),
+		sizeBytes:    req.SizeBytes,
+		createdAt:    time.Now(),
 	}, nil
 }
 
@@ -62,12 +56,12 @@ func (p *Photo) UpdateCaption(caption string) error {
 	if len(caption) > 500 {
 		return errors.New("caption too long")
 	}
-	p.Caption = caption
+	p.caption = caption
 	return nil
 }
 
 func (p *Photo) SetThumbnailURL(thumbnailURL string) {
-	p.ThumbnailURL = thumbnailURL
+	p.thumbnailURL = thumbnailURL
 }
 
 func validatePhotoFormat(format string) error {
@@ -79,12 +73,70 @@ func validatePhotoFormat(format string) error {
 	}
 
 	if !allowedFormats[strings.ToLower(format)] {
-		return ErrInvalidPhotoFormat
+		return ErrInvalidPhotoFormat(format)
 	}
 
 	return nil
 }
 
 func (p *Photo) IsValidFormat() bool {
-	return validatePhotoFormat(p.Format) == nil
+	return validatePhotoFormat(p.format) == nil
+}
+
+func ReconstructPhoto(
+	id PhotoID,
+	postID PostID,
+	url, thumbnailURL, caption string,
+	displayOrder int,
+	format string,
+	sizeBytes int64,
+	createdAt time.Time,
+) *Photo {
+	return &Photo{
+		id:           id,
+		postID:       postID,
+		url:          url,
+		thumbnailURL: thumbnailURL,
+		caption:      caption,
+		displayOrder: displayOrder,
+		format:       format,
+		sizeBytes:    sizeBytes,
+		createdAt:    createdAt,
+	}
+}
+
+func (p *Photo) ID() PhotoID {
+	return p.id
+}
+
+func (p *Photo) PostID() PostID {
+	return p.postID
+}
+
+func (p *Photo) URL() string {
+	return p.url
+}
+
+func (p *Photo) ThumbnailURL() string {
+	return p.thumbnailURL
+}
+
+func (p *Photo) Caption() string {
+	return p.caption
+}
+
+func (p *Photo) DisplayOrder() int {
+	return p.displayOrder
+}
+
+func (p *Photo) Format() string {
+	return p.format
+}
+
+func (p *Photo) SizeBytes() int64 {
+	return p.sizeBytes
+}
+
+func (p *Photo) CreatedAt() time.Time {
+	return p.createdAt
 }

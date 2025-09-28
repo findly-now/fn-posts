@@ -83,19 +83,18 @@ func (h *PostHandler) CreatePost(c *gin.Context) {
 		return
 	}
 
-	createReq := domain.CreatePostRequest{
-		Title:          req.Title,
-		Description:    req.Description,
-		Location:       req.Location,
-		RadiusMeters:   req.RadiusMeters,
-		Type:           req.Type,
-		CreatedBy:      userID,
-		OrganizationID: req.OrganizationID,
-	}
-
-	post, err := h.postService.CreatePost(c.Request.Context(), createReq)
+	post, err := h.postService.CreatePost(
+		c.Request.Context(),
+		req.Title,
+		req.Description,
+		req.Location,
+		req.RadiusMeters,
+		req.Type,
+		userID,
+		req.OrganizationID,
+	)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		HandleError(c, err)
 		return
 	}
 
@@ -112,11 +111,7 @@ func (h *PostHandler) GetPost(c *gin.Context) {
 
 	post, err := h.postService.GetPostByID(c.Request.Context(), id)
 	if err != nil {
-		if strings.Contains(err.Error(), "not found") {
-			c.JSON(http.StatusNotFound, gin.H{"error": "Post not found"})
-			return
-		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve post"})
+		HandleError(c, err)
 		return
 	}
 
@@ -139,11 +134,7 @@ func (h *PostHandler) UpdatePost(c *gin.Context) {
 
 	post, err := h.postService.UpdatePost(c.Request.Context(), id, req.Title, req.Description)
 	if err != nil {
-		if strings.Contains(err.Error(), "not found") {
-			c.JSON(http.StatusNotFound, gin.H{"error": "Post not found"})
-			return
-		}
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		HandleError(c, err)
 		return
 	}
 
@@ -368,37 +359,37 @@ func (h *PostHandler) parseFiltersFromQuery(c *gin.Context) domain.PostFilters {
 }
 
 func (h *PostHandler) toPostResponse(post *domain.Post) PostResponse {
-	photos := make([]PhotoResponse, len(post.Photos))
-	for i, photo := range post.Photos {
+	photos := make([]PhotoResponse, len(post.Photos()))
+	for i, photo := range post.Photos() {
 		photos[i] = PhotoResponse{
-			ID:           photo.ID.UUID(),
-			URL:          photo.URL,
-			ThumbnailURL: photo.ThumbnailURL,
-			Caption:      photo.Caption,
-			DisplayOrder: photo.DisplayOrder,
-			CreatedAt:    photo.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
+			ID:           photo.ID().UUID(),
+			URL:          photo.URL(),
+			ThumbnailURL: photo.ThumbnailURL(),
+			Caption:      photo.Caption(),
+			DisplayOrder: photo.DisplayOrder(),
+			CreatedAt:    photo.CreatedAt().Format("2006-01-02T15:04:05Z07:00"),
 		}
 	}
 
 	var orgID *uuid.UUID
-	if post.OrganizationID != nil {
-		id := post.OrganizationID.UUID()
+	if post.OrganizationID() != nil {
+		id := post.OrganizationID().UUID()
 		orgID = &id
 	}
 
 	return PostResponse{
-		ID:             post.ID.UUID(),
-		Title:          post.Title,
-		Description:    post.Description,
+		ID:             post.ID().UUID(),
+		Title:          post.Title(),
+		Description:    post.Description(),
 		Photos:         photos,
-		Location:       post.Location,
-		RadiusMeters:   post.RadiusMeters,
-		Status:         post.Status,
-		Type:           post.Type,
-		CreatedBy:      post.CreatedBy.UUID(),
+		Location:       post.Location(),
+		RadiusMeters:   post.RadiusMeters(),
+		Status:         post.Status(),
+		Type:           post.PostType(),
+		CreatedBy:      post.CreatedBy().UUID(),
 		OrganizationID: orgID,
-		CreatedAt:      post.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
-		UpdatedAt:      post.UpdatedAt.Format("2006-01-02T15:04:05Z07:00"),
+		CreatedAt:      post.CreatedAt().Format("2006-01-02T15:04:05Z07:00"),
+		UpdatedAt:      post.UpdatedAt().Format("2006-01-02T15:04:05Z07:00"),
 	}
 }
 

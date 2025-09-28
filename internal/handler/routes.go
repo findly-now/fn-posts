@@ -35,7 +35,7 @@ func SetupRoutes(router *gin.RouterGroup, postService *service.PostService, stor
 
 		// Photo routes (sub-resource of posts)
 		posts.POST("/:postId/photos", photoHandler.UploadPhoto)
-		posts.DELETE("/:postId/photos/:photoId", photoHandler.DeletePhoto)
+		// posts.DELETE("/:postId/photos/:photoId", photoHandler.DeletePhoto) // TODO: Fix route conflict
 	}
 
 	// Users routes

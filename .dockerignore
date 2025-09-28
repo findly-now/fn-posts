@@ -1,0 +1,41 @@
+# Git
+.git
+.gitignore
+
+# Docker
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# Documentation
+README.md
+docs/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Runtime
+bin/
+tmp/
+
+# Test files
+*_test.go
+coverage.out
+coverage.html
+
+# Development
+.env
+.env.local
+
+# Dependencies (will be downloaded in container)
+vendor/

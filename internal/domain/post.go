@@ -37,6 +37,7 @@ type Post struct {
 
 func NewPost(
 	title, description string,
+	photos []Photo,
 	location Location,
 	radiusMeters int,
 	postType PostType,
@@ -49,6 +50,10 @@ func NewPost(
 
 	if title == "" {
 		return nil, ErrInvalidTitle()
+	}
+
+	if len(photos) < 1 || len(photos) > 10 {
+		return nil, ErrInvalidPhotoCount(len(photos))
 	}
 
 	if err := location.Validate(); err != nil {
@@ -65,7 +70,7 @@ func NewPost(
 		id:             NewPostID(),
 		title:          title,
 		description:    description,
-		photos:         []Photo{},
+		photos:         photos,
 		location:       location,
 		radiusMeters:   radiusMeters,
 		status:         PostStatusActive,

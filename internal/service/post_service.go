@@ -26,8 +26,8 @@ func NewPostService(
 	}
 }
 
-func (s *PostService) CreatePost(ctx context.Context, title, description string, location domain.Location, radiusMeters int, postType domain.PostType, createdBy domain.UserID, organizationID *domain.OrganizationID) (*domain.Post, error) {
-	post, err := domain.NewPost(title, description, location, radiusMeters, postType, createdBy, organizationID)
+func (s *PostService) CreatePost(ctx context.Context, title, description string, photos []domain.Photo, location domain.Location, radiusMeters int, postType domain.PostType, createdBy domain.UserID, organizationID *domain.OrganizationID) (*domain.Post, error) {
+	post, err := domain.NewPost(title, description, photos, location, radiusMeters, postType, createdBy, organizationID)
 	if err != nil {
 		return nil, fmt.Errorf("invalid post data: %w", err)
 	}

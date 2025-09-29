@@ -2,6 +2,7 @@ package handler
 
 import (
 	"net/http"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -13,21 +14,24 @@ import (
 
 type PostHandler struct {
 	postService *service.PostService
+	storage     StorageInterface
 }
 
-func NewPostHandler(postService *service.PostService) *PostHandler {
+func NewPostHandler(postService *service.PostService, storage StorageInterface) *PostHandler {
 	return &PostHandler{
 		postService: postService,
+		storage:     storage,
 	}
 }
 
 type CreatePostRequest struct {
-	Title          string                 `json:"title" binding:"required,min=1,max=200"`
-	Description    string                 `json:"description" binding:"max=2000"`
-	Location       domain.Location        `json:"location" binding:"required"`
-	RadiusMeters   int                    `json:"radius_meters" binding:"min=100,max=50000"`
-	Type           domain.PostType        `json:"type" binding:"required"`
-	OrganizationID *domain.OrganizationID `json:"organization_id,omitempty"`
+	Title          string  `form:"title" binding:"required,min=1,max=200"`
+	Description    string  `form:"description" binding:"max=2000"`
+	Latitude       float64 `form:"latitude" binding:"required,min=-90,max=90"`
+	Longitude      float64 `form:"longitude" binding:"required,min=-180,max=180"`
+	RadiusMeters   int     `form:"radius_meters" binding:"min=100,max=50000"`
+	Type           string  `form:"type" binding:"required"`
+	OrganizationID string  `form:"organization_id"`
 }
 
 type UpdatePostRequest struct {
@@ -71,8 +75,14 @@ type ListPostsResponse struct {
 }
 
 func (h *PostHandler) CreatePost(c *gin.Context) {
+	// Parse multipart form with photo files
+	if err := c.Request.ParseMultipartForm(32 << 20); err != nil { // 32MB max
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to parse form data"})
+		return
+	}
+
 	var req CreatePostRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
+	if err := c.ShouldBind(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
@@ -83,15 +93,101 @@ func (h *PostHandler) CreatePost(c *gin.Context) {
 		return
 	}
 
+	// Create location from latitude/longitude
+	location, err := domain.NewLocation(req.Latitude, req.Longitude)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid location coordinates"})
+		return
+	}
+
+	// Parse post type
+	postType := domain.PostType(req.Type)
+	if postType != domain.PostTypeLost && postType != domain.PostTypeFound {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid post type. Must be 'lost' or 'found'"})
+		return
+	}
+
+	// Parse organization ID if provided
+	var organizationID *domain.OrganizationID
+	if req.OrganizationID != "" {
+		orgID, err := domain.OrganizationIDFromString(req.OrganizationID)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid organization ID"})
+			return
+		}
+		organizationID = &orgID
+	}
+
+	// Process photo uploads (1-10 photos required)
+	form := c.Request.MultipartForm
+	files := form.File["photos"]
+
+	if len(files) < 1 || len(files) > 10 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Must upload between 1 and 10 photos"})
+		return
+	}
+
+	photos := make([]domain.Photo, 0, len(files))
+	for i, fileHeader := range files {
+		// Validate file format
+		if !h.isValidPhotoFormat(fileHeader.Filename) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid photo format. Supported: jpg, jpeg, png, webp"})
+			return
+		}
+
+		// Open file for upload
+		file, err := fileHeader.Open()
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to open photo file: " + err.Error()})
+			return
+		}
+		defer file.Close()
+
+		// Upload to Google Cloud Storage
+		var orgIDPtr *uuid.UUID
+		if organizationID != nil {
+			orgID := organizationID.UUID()
+			orgIDPtr = &orgID
+		}
+
+		// Create a temporary post ID for upload (we'll update this later)
+		tempPostID := uuid.New()
+
+		result, err := h.storage.UploadPhoto(c.Request.Context(), file, fileHeader, tempPostID, orgIDPtr)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to upload photo: " + err.Error()})
+			return
+		}
+
+		// Create photo domain object with real GCS URL
+		photoReq := domain.CreatePhotoRequest{
+			URL:          result.URL,
+			Caption:      c.PostForm("captions[" + strconv.Itoa(i) + "]"), // Optional captions
+			DisplayOrder: i + 1,
+			Format:       result.Format,
+			SizeBytes:    result.Size,
+		}
+
+		photo, err := domain.NewPhoto(photoReq)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid photo data: " + err.Error()})
+			return
+		}
+
+		photos = append(photos, *photo)
+	}
+
+	// Create post with photos
 	post, err := h.postService.CreatePost(
 		c.Request.Context(),
 		req.Title,
 		req.Description,
-		req.Location,
+		photos,
+		location,
 		req.RadiusMeters,
-		req.Type,
+		postType,
 		userID,
-		req.OrganizationID,
+		organizationID,
 	)
 	if err != nil {
 		HandleError(c, err)
@@ -412,4 +508,25 @@ func (h *PostHandler) getUserIDFromContext(c *gin.Context) domain.UserID {
 
 	// In a real implementation, this would be extracted from JWT token
 	return domain.NewUserID() // Temporary for development
+}
+
+// Helper methods for photo handling
+
+func (h *PostHandler) isValidPhotoFormat(filename string) bool {
+	ext := strings.ToLower(filepath.Ext(filename))
+	validFormats := map[string]bool{
+		".jpg":  true,
+		".jpeg": true,
+		".png":  true,
+		".webp": true,
+	}
+	return validFormats[ext]
+}
+
+func (h *PostHandler) getFileExtension(filename string) string {
+	ext := strings.ToLower(filepath.Ext(filename))
+	if len(ext) > 1 {
+		return ext[1:] // Remove the dot
+	}
+	return ""
 }

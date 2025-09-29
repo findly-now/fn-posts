@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"log"
-	"mime/multipart"
 	"net/http"
 	"os"
 	"os/signal"
@@ -12,63 +11,38 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/google/uuid"
+	"github.com/jsarabia/fn-posts/internal"
 	"github.com/jsarabia/fn-posts/internal/config"
-	"github.com/jsarabia/fn-posts/internal/handler"
-	"github.com/jsarabia/fn-posts/internal/repository"
-	"github.com/jsarabia/fn-posts/internal/service"
 	_ "github.com/lib/pq"
 )
 
 func main() {
 	cfg := config.Load()
 
-	// Initialize database connection
+	// Initialize database connection with connection pooling
 	db, err := sql.Open("postgres", cfg.PostgresURL)
 	if err != nil {
 		log.Fatalf("Failed to connect to database: %v", err)
 	}
 	defer db.Close()
 
+	// Configure connection pool for optimal performance
+	db.SetMaxOpenConns(25)                 // Maximum number of open connections
+	db.SetMaxIdleConns(5)                  // Maximum number of idle connections
+	db.SetConnMaxLifetime(5 * time.Minute) // Maximum connection lifetime
+
 	// Test database connection
 	if err := db.Ping(); err != nil {
 		log.Fatalf("Failed to ping database: %v", err)
 	}
-	log.Println("Connected to database successfully")
+	log.Println("Connected to database successfully with connection pooling")
 
-	// Initialize repositories
-	postRepo := repository.NewPostgresPostRepository(db)
-	photoRepo := repository.NewPostgresPhotoRepository(db)
-
-	// Initialize storage service (use test storage in test environment)
-	var storageService interface {
-		UploadPhoto(ctx context.Context, file multipart.File, header *multipart.FileHeader, postID uuid.UUID, organizationID *uuid.UUID) (*service.UploadResult, error)
-		DeletePhoto(ctx context.Context, filename string) error
-		GetPhotoURL(filename string) string
-		GenerateThumbnail(ctx context.Context, originalURL string, postID uuid.UUID, organizationID *uuid.UUID) (string, error)
-	}
-
-	if cfg.Environment == "test" {
-		storageService = service.NewTestStorageService(cfg.StorageConfig)
-		log.Println("Using test storage service")
-	} else {
-		var err error
-		storageService, err = service.NewStorageService(cfg.StorageConfig)
-		if err != nil {
-			log.Fatalf("Failed to initialize storage service: %v", err)
-		}
-		log.Println("Using GCS storage service")
-	}
-
-	// Initialize event service
-	eventService, err := service.NewEventService(cfg.KafkaConfig)
+	// Initialize application using Wire
+	app, err := internal.InitializeApplication(db, cfg)
 	if err != nil {
-		log.Fatalf("Failed to initialize event service: %v", err)
+		log.Fatalf("Failed to initialize application: %v", err)
 	}
-	defer eventService.Close()
-
-	// Initialize post service
-	postService := service.NewPostService(postRepo, photoRepo, eventService)
+	log.Println("Application initialized successfully with Wire dependency injection")
 
 	// Setup router
 	router := gin.Default()
@@ -81,9 +55,29 @@ func main() {
 		})
 	})
 
-	// API routes
-	api := router.Group("/api/v1")
-	handler.SetupRoutes(api, postService, storageService)
+	// API routes using Wire-injected handlers
+	api := router.Group("/api")
+
+	// Posts routes
+	posts := api.Group("/posts")
+	{
+		posts.POST("", app.PostHandler.CreatePost)
+		posts.GET("", app.PostHandler.ListPosts)
+		posts.GET("/nearby", app.PostHandler.SearchNearbyPosts)
+		posts.GET("/:id", app.PostHandler.GetPost)
+		posts.PUT("/:id", app.PostHandler.UpdatePost)
+		posts.PATCH("/:id/status", app.PostHandler.UpdatePostStatus)
+		posts.DELETE("/:id", app.PostHandler.DeletePost)
+
+		// Photo routes (sub-resource of posts)
+		posts.POST("/:postId/photos", app.PhotoHandler.UploadPhoto)
+	}
+
+	// Users routes
+	users := api.Group("/users")
+	{
+		users.GET("/:userId/posts", app.PostHandler.GetUserPosts)
+	}
 
 	srv := &http.Server{
 		Addr:    ":" + cfg.Port,

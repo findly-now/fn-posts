@@ -18,35 +18,35 @@ const (
 )
 
 type PostEvent struct {
-	ID        uuid.UUID
-	EventType EventType
-	PostID    PostID
-	UserID    UserID
-	TenantID  *OrganizationID
-	Data      interface{}
-	Timestamp time.Time
-	Version   int
+	ID        uuid.UUID       `json:"id"`
+	EventType EventType       `json:"event_type"`
+	PostID    PostID          `json:"post_id"`
+	UserID    UserID          `json:"user_id"`
+	TenantID  *OrganizationID `json:"tenant_id,omitempty"`
+	Data      interface{}     `json:"data"`
+	Timestamp time.Time       `json:"timestamp"`
+	Version   int             `json:"version"`
 }
 
 type PostCreatedEventData struct {
-	Post *Post
+	Post *Post `json:"post"`
 }
 
 type PostUpdatedEventData struct {
-	Post     *Post
-	Changes  map[string]interface{}
-	Previous map[string]interface{}
+	Post     *Post                  `json:"post"`
+	Changes  map[string]interface{} `json:"changes"`
+	Previous map[string]interface{} `json:"previous"`
 }
 
 type PostStatusChangedEventData struct {
-	PostID         PostID
-	NewStatus      PostStatus
-	PreviousStatus PostStatus
+	PostID         PostID     `json:"post_id"`
+	NewStatus      PostStatus `json:"new_status"`
+	PreviousStatus PostStatus `json:"previous_status"`
 }
 
 type PhotoEventData struct {
-	PostID PostID
-	Photo  *Photo
+	PostID PostID `json:"post_id"`
+	Photo  *Photo `json:"photo"`
 }
 
 func NewPostEvent(eventType EventType, postID PostID, userID UserID, tenantID *OrganizationID, data interface{}) *PostEvent {

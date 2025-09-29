@@ -19,7 +19,7 @@ type StorageInterface interface {
 
 func SetupRoutes(router *gin.RouterGroup, postService *service.PostService, storageService StorageInterface) {
 	// Initialize handlers
-	postHandler := NewPostHandler(postService)
+	postHandler := NewPostHandler(postService, storageService)
 	photoHandler := NewPhotoHandler(postService, storageService)
 
 	// Posts routes

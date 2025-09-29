@@ -13,6 +13,7 @@ services:
   # =============================================================================
   postgres-test:
     image: postgis/postgis:15-3.3
+    platform: linux/amd64
     container_name: posts-postgres-test
     environment:
       POSTGRES_DB: posts_test_db
@@ -75,6 +76,7 @@ services:
   # =============================================================================
   zookeeper-test:
     image: confluentinc/cp-zookeeper:7.4.0
+    platform: linux/amd64
     container_name: posts-zookeeper-test
     environment:
       ZOOKEEPER_CLIENT_PORT: 2181
@@ -84,6 +86,7 @@ services:
 
   kafka-test:
     image: confluentinc/cp-kafka:7.4.0
+    platform: linux/amd64
     container_name: posts-kafka-test
     depends_on:
       - zookeeper-test

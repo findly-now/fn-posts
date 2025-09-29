@@ -1,5 +1,5 @@
 # Build stage
-FROM golang:1.25-alpine AS builder
+FROM golang:1.24-alpine AS builder
 
 # Install necessary packages
 RUN apk add --no-cache git ca-certificates tzdata build-base
@@ -54,7 +54,7 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
 CMD ["./main"]
 
 # Development stage
-FROM golang:1.25-alpine AS development
+FROM golang:1.24-alpine AS development
 
 # Install development tools
 RUN apk add --no-cache \

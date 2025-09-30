@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"mime/multipart"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -31,6 +32,17 @@ type UploadResult struct {
 
 // NewStorageService creates a new storage service using Google Cloud Storage
 func NewStorageService(cfg config.StorageConfig) (*StorageService, error) {
+	// For local development with MinIO, skip GCS initialization
+	storageProvider := os.Getenv("STORAGE_PROVIDER")
+	if storageProvider == "minio" || storageProvider == "test" {
+		// Return a storage service that doesn't use GCS client
+		// MinIO is already initialized by docker-compose
+		return &StorageService{
+			client: nil, // MinIO doesn't need GCS client
+			config: cfg,
+		}, nil
+	}
+
 	ctx := context.Background()
 
 	var client *storage.Client
@@ -116,7 +128,28 @@ func (s *StorageService) UploadPhoto(ctx context.Context, file multipart.File, h
 	// Generate unique filename
 	filename := s.generateFilename(postID, organizationID, format)
 
-	// Create object writer
+	// If using MinIO (client is nil), return a mock result for now
+	if s.client == nil {
+		// For MinIO/local development, just return a mock URL
+		// In a real implementation, you would use the MinIO Go SDK
+		minioEndpoint := os.Getenv("MINIO_ENDPOINT")
+		minioBucket := os.Getenv("MINIO_BUCKET")
+		if minioEndpoint == "" {
+			minioEndpoint = "localhost:9000"
+		}
+		if minioBucket == "" {
+			minioBucket = "posts-photos-dev"
+		}
+
+		return &UploadResult{
+			URL:      fmt.Sprintf("http://%s/%s/%s", minioEndpoint, minioBucket, filename),
+			Size:     header.Size,
+			Format:   format,
+			Filename: filename,
+		}, nil
+	}
+
+	// Create object writer for GCS
 	bucket := s.client.Bucket(s.config.BucketName)
 	obj := bucket.Object(filename)
 	writer := obj.NewWriter(ctx)
@@ -161,6 +194,12 @@ func (s *StorageService) UploadPhoto(ctx context.Context, file multipart.File, h
 
 // DeletePhoto deletes a photo from Google Cloud Storage
 func (s *StorageService) DeletePhoto(ctx context.Context, filename string) error {
+	// If using MinIO (client is nil), skip deletion for now
+	if s.client == nil {
+		// In a real implementation, you would use MinIO SDK to delete
+		return nil
+	}
+
 	bucket := s.client.Bucket(s.config.BucketName)
 	obj := bucket.Object(filename)
 

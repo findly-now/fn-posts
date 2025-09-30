@@ -2,6 +2,7 @@ package dto
 
 import (
 	"database/sql"
+	"fmt"
 	"time"
 
 	"github.com/jsarabia/fn-posts/internal/domain"
@@ -29,21 +30,34 @@ func (dto *PostDTO) ToDomain(photos []domain.Photo) (*domain.Post, error) {
 		return nil, err
 	}
 
+	postID, err := domain.PostIDFromString(dto.ID)
+	if err != nil {
+		return nil, fmt.Errorf("invalid post ID: %w", err)
+	}
+
+	userID, err := domain.UserIDFromString(dto.CreatedBy)
+	if err != nil {
+		return nil, fmt.Errorf("invalid user ID: %w", err)
+	}
+
 	var organizationID *domain.OrganizationID
 	if dto.OrganizationID.Valid {
-		orgID := domain.OrganizationID(dto.OrganizationID.String)
+		orgID, err := domain.OrganizationIDFromString(dto.OrganizationID.String)
+		if err != nil {
+			return nil, fmt.Errorf("invalid organization ID: %w", err)
+		}
 		organizationID = &orgID
 	}
 
 	post := domain.ReconstructPost(
-		domain.PostID(dto.ID),
+		postID,
 		dto.Title,
 		dto.Description,
 		location,
 		dto.RadiusMeters,
 		domain.PostStatus(dto.Status),
 		domain.PostType(dto.Type),
-		domain.UserID(dto.CreatedBy),
+		userID,
 		organizationID,
 		dto.CreatedAt,
 		dto.UpdatedAt,
@@ -55,7 +69,7 @@ func (dto *PostDTO) ToDomain(photos []domain.Photo) (*domain.Post, error) {
 
 func FromDomainPost(post *domain.Post) *PostDTO {
 	dto := &PostDTO{
-		ID:           string(post.ID()),
+		ID:           post.ID().String(),
 		Title:        post.Title(),
 		Description:  post.Description(),
 		Longitude:    post.Location().Longitude,
@@ -63,14 +77,14 @@ func FromDomainPost(post *domain.Post) *PostDTO {
 		RadiusMeters: post.RadiusMeters(),
 		Status:       string(post.Status()),
 		Type:         string(post.PostType()),
-		CreatedBy:    string(post.CreatedBy()),
+		CreatedBy:    post.CreatedBy().String(),
 		CreatedAt:    post.CreatedAt(),
 		UpdatedAt:    post.UpdatedAt(),
 	}
 
 	if post.OrganizationID() != nil {
 		dto.OrganizationID = sql.NullString{
-			String: string(*post.OrganizationID()),
+			String: post.OrganizationID().String(),
 			Valid:  true,
 		}
 	}

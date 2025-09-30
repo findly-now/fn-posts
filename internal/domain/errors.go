@@ -34,6 +34,14 @@ const (
 	RepositoryErrorNotFound   PostErrorCode = "REPOSITORY_NOT_FOUND"
 	RepositoryErrorDuplicate  PostErrorCode = "REPOSITORY_DUPLICATE"
 	RepositoryErrorConnection PostErrorCode = "REPOSITORY_CONNECTION"
+
+	// Contact Exchange errors
+	ContactExchangeErrorInvalidStatus     PostErrorCode = "CONTACT_EXCHANGE_INVALID_STATUS"
+	ContactExchangeErrorExpired           PostErrorCode = "CONTACT_EXCHANGE_EXPIRED"
+	ContactExchangeErrorNotFound          PostErrorCode = "CONTACT_EXCHANGE_NOT_FOUND"
+	ContactExchangeErrorCannotRequestOwn  PostErrorCode = "CONTACT_EXCHANGE_CANNOT_REQUEST_OWN"
+	ContactExchangeErrorInvalidUserID     PostErrorCode = "CONTACT_EXCHANGE_INVALID_USER_ID"
+	ContactExchangeErrorInvalidPostID     PostErrorCode = "CONTACT_EXCHANGE_INVALID_POST_ID"
 )
 
 type PostError struct {
@@ -204,4 +212,51 @@ func GetPostErrorCode(err error) PostErrorCode {
 		return postErr.Code
 	}
 	return ""
+}
+
+// Contact Exchange error functions
+func ErrInvalidContactExchangeStatus(currentStatus, newStatus ContactExchangeStatus) PostError {
+	return NewPostError(
+		ContactExchangeErrorInvalidStatus,
+		"Cannot transition contact exchange to the requested status",
+	).WithDetail("current_status", string(currentStatus)).WithDetail("new_status", string(newStatus))
+}
+
+func ErrContactExchangeExpired() PostError {
+	return NewPostError(
+		ContactExchangeErrorExpired,
+		"Contact exchange request has expired",
+	)
+}
+
+func ErrContactExchangeNotFound(requestID ContactExchangeRequestID) PostError {
+	return NewPostError(
+		ContactExchangeErrorNotFound,
+		"Contact exchange request not found",
+	).WithDetail("request_id", requestID.String())
+}
+
+func ErrCannotRequestOwnContact() PostError {
+	return NewPostError(
+		ContactExchangeErrorCannotRequestOwn,
+		"Cannot request contact exchange for your own post",
+	)
+}
+
+func ErrInvalidUserID() PostError {
+	return NewPostError(
+		ContactExchangeErrorInvalidUserID,
+		"User ID cannot be empty",
+	)
+}
+
+func ErrInvalidPostID() PostError {
+	return NewPostError(
+		ContactExchangeErrorInvalidPostID,
+		"Post ID cannot be empty",
+	)
+}
+
+func NewContactExchangeError(code PostErrorCode, message string) PostError {
+	return NewPostError(code, message)
 }

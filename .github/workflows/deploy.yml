@@ -1,158 +1,619 @@
-name: Build and Deploy Posts Service
+name: Deploy fn-posts Service
 
 on:
   push:
     branches:
-      - main          # Deploy to production
-      - develop       # Deploy to staging
-      - 'feature/*'   # Deploy to dev
+      - main          # Production deployment
+      - develop       # Development deployment
+    tags:
+      - 'v*'         # Semantic version releases
   pull_request:
     branches:
       - main
       - develop
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to deploy to'
+        required: true
+        default: 'dev'
+        type: choice
+        options:
+          - dev
+          - prod
+      rollback:
+        description: 'Rollback to previous version'
+        required: false
+        default: false
+        type: boolean
 
 env:
-  PROJECT_ID: findly-production  # Change this to your GCP project
-  GAR_LOCATION: us-central1      # Change this to your Artifact Registry location
-  REPOSITORY: findly-services    # Change this to your Artifact Registry repository
+  GO_VERSION: '1.21'
+  PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+  GAR_LOCATION: us-central1
+  REPOSITORY: findly-services
   SERVICE: fn-posts
-  REGION: us-central1           # Change this to your Cloud Run region
+  GKE_CLUSTER: findly-cluster
+  HELM_VERSION: '3.13.0'
+
+permissions:
+  contents: read
+  id-token: write  # Required for Workload Identity
 
 jobs:
+  # Build and Test Job
   test:
+    name: Build and Test
     runs-on: ubuntu-latest
-    name: Run Tests
-
     steps:
-    - name: Checkout
-      uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Required for proper git history
 
-    - name: Set up Go
-      uses: actions/setup-go@v4
-      with:
-        go-version: '1.21'
-        cache: true
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+          cache-dependency-path: |
+            go.sum
+            go.mod
 
-    - name: Install dependencies
-      run: go mod download
+      - name: Cache Go modules
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: ${{ runner.os }}-go-${{ env.GO_VERSION }}-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-${{ env.GO_VERSION }}-
+            ${{ runner.os }}-go-
 
-    - name: Run linting
-      run: |
-        go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
-        golangci-lint run
+      - name: Install dependencies
+        run: |
+          go mod download
+          go mod verify
 
-    - name: Format check
-      run: |
-        if [ "$(gofmt -s -l . | wc -l)" -gt 0 ]; then
-          echo "Go code is not formatted:"
-          gofmt -s -l .
-          exit 1
-        fi
+      - name: Install golangci-lint
+        uses: golangci/golangci-lint-action@v3
+        with:
+          version: latest
+          skip-cache: false
+          skip-pkg-cache: false
+          skip-build-cache: false
 
-    - name: Run E2E tests
-      run: make e2e-test
+      - name: Run linting
+        run: |
+          golangci-lint run --timeout 5m
 
-  build-and-deploy:
+      - name: Check formatting
+        run: |
+          if [ "$(gofmt -s -l . | wc -l)" -gt 0 ]; then
+            echo "Go code is not formatted:"
+            gofmt -s -d .
+            exit 1
+          fi
+
+      - name: Build binary
+        run: |
+          go build -v -o bin/posts-service cmd/main.go
+
+      - name: Start test dependencies
+        run: |
+          docker-compose -f docker-compose.test.yml up -d
+          sleep 10  # Wait for services to be ready
+
+      - name: Run E2E tests
+        env:
+          DATABASE_URL: ${{ secrets.TEST_DATABASE_URL }}
+          GCS_BUCKET: ${{ secrets.TEST_GCS_BUCKET }}
+          KAFKA_BROKERS: localhost:9092
+        run: |
+          make e2e-test
+
+      - name: Upload test coverage
+        if: success()
+        uses: actions/upload-artifact@v3
+        with:
+          name: coverage-report
+          path: coverage.html
+          retention-days: 7
+
+      - name: Stop test dependencies
+        if: always()
+        run: |
+          docker-compose -f docker-compose.test.yml down -v
+
+  # Security Scanning Job
+  security:
+    name: Security Scanning
+    runs-on: ubuntu-latest
     needs: test
-    runs-on: ubuntu-latest
-    name: Build and Deploy
-
-    # Only run on push events (not PRs)
-    if: github.event_name == 'push'
-
     steps:
-    - name: Checkout
-      uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-    - name: Set environment based on branch
-      id: set-env
-      run: |
-        if [[ ${{ github.ref }} == 'refs/heads/main' ]]; then
-          echo "environment=production" >> $GITHUB_OUTPUT
-          echo "k8s_namespace=findly" >> $GITHUB_OUTPUT
-        elif [[ ${{ github.ref }} == 'refs/heads/develop' ]]; then
-          echo "environment=staging" >> $GITHUB_OUTPUT
-          echo "k8s_namespace=findly" >> $GITHUB_OUTPUT
-        else
-          echo "environment=dev" >> $GITHUB_OUTPUT
-          echo "k8s_namespace=findly" >> $GITHUB_OUTPUT
-        fi
+      - name: Run Trivy security scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          format: 'sarif'
+          output: 'trivy-results.sarif'
 
-    - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@v3
+      - name: Upload Trivy results to GitHub Security
+        uses: github/codeql-action/upload-sarif@v2
+        if: always()
+        with:
+          sarif_file: 'trivy-results.sarif'
 
-    - name: Authenticate to Google Cloud
-      id: auth
-      uses: google-github-actions/auth@v1
-      with:
-        credentials_json: ${{ secrets.GCP_SA_KEY }}
+      - name: Run gosec security scanner
+        uses: securego/gosec@master
+        with:
+          args: '-no-fail -fmt sarif -out gosec-results.sarif ./...'
 
-    - name: Set up Cloud SDK
-      uses: google-github-actions/setup-gcloud@v1
+      - name: Upload gosec results
+        uses: github/codeql-action/upload-sarif@v2
+        if: always()
+        with:
+          sarif_file: 'gosec-results.sarif'
 
-    - name: Configure Docker to use gcloud as a credential helper
-      run: gcloud auth configure-docker ${{ env.GAR_LOCATION }}-docker.pkg.dev
+  # Build and Push Docker Image
+  build-image:
+    name: Build and Push Docker Image
+    runs-on: ubuntu-latest
+    needs: [test, security]
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    outputs:
+      image-tag: ${{ steps.meta.outputs.tags }}
+      image-digest: ${{ steps.build.outputs.digest }}
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-    - name: Get GKE credentials
-      uses: google-github-actions/get-gke-credentials@v1
-      with:
-        cluster_name: ${{ secrets.GKE_CLUSTER }}
-        location: ${{ secrets.GKE_ZONE }}
+      - name: Determine version and environment
+        id: version
+        run: |
+          # Determine environment based on branch or input
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            ENV="${{ github.event.inputs.environment }}"
+          elif [[ "${{ github.ref }}" == "refs/heads/main" ]] || [[ "${{ github.ref }}" == "refs/tags/v"* ]]; then
+            ENV="prod"
+          elif [[ "${{ github.ref }}" == "refs/heads/develop" ]]; then
+            ENV="dev"
+          else
+            ENV="dev"
+          fi
 
-    - name: Generate image tag
-      id: image-tag
-      run: |
-        # Use git commit SHA and timestamp for unique tags
-        SHORT_SHA=$(git rev-parse --short HEAD)
-        TIMESTAMP=$(date +%Y%m%d-%H%M%S)
-        TAG="${{ steps.set-env.outputs.environment }}-${TIMESTAMP}-${SHORT_SHA}"
-        echo "tag=${TAG}" >> $GITHUB_OUTPUT
-        echo "image=${{ env.GAR_LOCATION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.SERVICE }}:${TAG}" >> $GITHUB_OUTPUT
+          # Generate semantic version
+          if [[ "${{ github.ref }}" == "refs/tags/v"* ]]; then
+            VERSION="${{ github.ref_name }}"
+          else
+            # Use git describe to generate version
+            VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo "v0.0.0")
+            if [[ ! "$VERSION" == v* ]]; then
+              VERSION="v0.0.0-${VERSION}"
+            fi
+            # Add environment and build number
+            VERSION="${VERSION}-${ENV}.${GITHUB_RUN_NUMBER}"
+          fi
 
-    - name: Build Docker image
-      run: |
-        docker build -t ${{ steps.image-tag.outputs.image }} .
+          echo "environment=${ENV}" >> $GITHUB_OUTPUT
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "namespace=findly-${ENV}" >> $GITHUB_OUTPUT
 
-    - name: Push Docker image
-      run: |
-        docker push ${{ steps.image-tag.outputs.image }}
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          driver-opts: network=host
 
-    - name: Deploy to Kubernetes
-      run: |
-        # Clone fn-infra repository to get deployment scripts
-        git clone https://github.com/findly-now/fn-infra.git /tmp/fn-infra || true
+      - name: Authenticate to Google Cloud (Workload Identity)
+        id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
+          token_format: 'access_token'
 
-        # Update the image in the deployment
-        kubectl set image deployment/posts posts=${{ steps.image-tag.outputs.image }} -n ${{ steps.set-env.outputs.k8s_namespace }}
+      - name: Configure Docker for Google Artifact Registry
+        run: |
+          echo "${{ steps.auth.outputs.access_token }}" | docker login -u oauth2accesstoken --password-stdin ${{ env.GAR_LOCATION }}-docker.pkg.dev
 
-        # Wait for rollout to complete
-        kubectl rollout status deployment/posts -n ${{ steps.set-env.outputs.k8s_namespace }} --timeout=300s
+      - name: Generate Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: |
+            ${{ env.GAR_LOCATION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.SERVICE }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=tag
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=${{ steps.version.outputs.version }}
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,prefix={{branch}}-,format=short
+          labels: |
+            org.opencontainers.image.title=fn-posts
+            org.opencontainers.image.description=Posts service for Findly platform
+            org.opencontainers.image.vendor=Findly
+            org.opencontainers.image.version=${{ steps.version.outputs.version }}
 
-    - name: Verify deployment
-      run: |
-        # Wait a bit for the deployment to be ready
-        sleep 10
+      - name: Build and push Docker image
+        id: build
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          target: production
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          platforms: linux/amd64
+          build-args: |
+            VERSION=${{ steps.version.outputs.version }}
+            BUILD_DATE=${{ github.event.repository.updated_at }}
+            VCS_REF=${{ github.sha }}
 
-        # Check if pods are running
-        kubectl get pods -l app=posts -n ${{ steps.set-env.outputs.k8s_namespace }}
+      - name: Generate SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          image: ${{ steps.meta.outputs.tags }}
+          format: spdx-json
+          output-file: sbom.spdx.json
 
-        # Check if service is responding
-        kubectl exec -n ${{ steps.set-env.outputs.k8s_namespace }} deployment/posts -- wget --spider -q http://localhost:8080/health || echo "Health check endpoint not ready yet"
+      - name: Upload SBOM
+        uses: actions/upload-artifact@v3
+        with:
+          name: sbom
+          path: sbom.spdx.json
+          retention-days: 30
 
-    - name: Notify deployment status
-      if: always()
-      run: |
-        if [ ${{ job.status }} == 'success' ]; then
-          echo "✅ Posts service deployed successfully to ${{ steps.set-env.outputs.environment }}"
-          echo "Image: ${{ steps.image-tag.outputs.image }}"
-        else
-          echo "❌ Posts service deployment failed"
-          kubectl get events -n ${{ steps.set-env.outputs.k8s_namespace }} --sort-by='.lastTimestamp' | tail -10
-        fi
+  # Database Migration Job
+  migrate:
+    name: Run Database Migrations
+    runs-on: ubuntu-latest
+    needs: build-image
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-    - name: Rollback on failure
-      if: failure()
-      run: |
-        echo "🔄 Rolling back posts deployment"
-        kubectl rollout undo deployment/posts -n ${{ steps.set-env.outputs.k8s_namespace }}
-        kubectl rollout status deployment/posts -n ${{ steps.set-env.outputs.k8s_namespace }} --timeout=180s
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
+
+      - name: Set up Cloud SQL Proxy
+        run: |
+          wget https://dl.google.com/cloudsql/cloud_sql_proxy.linux.amd64 -O cloud_sql_proxy
+          chmod +x cloud_sql_proxy
+
+      - name: Determine environment
+        id: env
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            ENV="${{ github.event.inputs.environment }}"
+          elif [[ "${{ github.ref }}" == "refs/heads/main" ]] || [[ "${{ github.ref }}" == "refs/tags/v"* ]]; then
+            ENV="prod"
+          else
+            ENV="dev"
+          fi
+          echo "environment=${ENV}" >> $GITHUB_OUTPUT
+
+      - name: Run migrations
+        env:
+          DATABASE_URL: ${{ steps.env.outputs.environment == 'prod' && secrets.PROD_DATABASE_URL || secrets.DEV_DATABASE_URL }}
+        run: |
+          # Start Cloud SQL proxy in background
+          ./cloud_sql_proxy -instances=${{ secrets.CLOUDSQL_CONNECTION_NAME }}=tcp:5432 &
+          PROXY_PID=$!
+
+          # Wait for proxy to be ready
+          sleep 5
+
+          # Run migrations
+          psql "${DATABASE_URL}" -f script.sql
+
+          # Stop proxy
+          kill $PROXY_PID
+
+  # Deploy to GKE using Helm
+  deploy:
+    name: Deploy to GKE
+    runs-on: ubuntu-latest
+    needs: [build-image, migrate]
+    if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.event.inputs.rollback != 'true'
+    environment:
+      name: ${{ needs.build-image.outputs.version }}
+      url: ${{ steps.deploy.outputs.url }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Checkout fn-infra repository
+        uses: actions/checkout@v4
+        with:
+          repository: findly-now/fn-infra
+          path: fn-infra
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          install_components: 'gke-gcloud-auth-plugin,kubectl'
+
+      - name: Get GKE credentials
+        uses: google-github-actions/get-gke-credentials@v2
+        with:
+          cluster_name: ${{ env.GKE_CLUSTER }}
+          location: ${{ env.GAR_LOCATION }}
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v3
+        with:
+          version: ${{ env.HELM_VERSION }}
+
+      - name: Determine deployment parameters
+        id: params
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            ENV="${{ github.event.inputs.environment }}"
+          elif [[ "${{ github.ref }}" == "refs/heads/main" ]] || [[ "${{ github.ref }}" == "refs/tags/v"* ]]; then
+            ENV="prod"
+          else
+            ENV="dev"
+          fi
+
+          echo "environment=${ENV}" >> $GITHUB_OUTPUT
+          echo "namespace=findly-${ENV}" >> $GITHUB_OUTPUT
+          echo "values_file=values-${ENV}.yaml" >> $GITHUB_OUTPUT
+
+      - name: Create namespace if not exists
+        run: |
+          kubectl create namespace ${{ steps.params.outputs.namespace }} --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Deploy using Helm
+        id: deploy
+        run: |
+          # Add Helm repository for dependencies if needed
+          helm repo add bitnami https://charts.bitnami.com/bitnami
+          helm repo update
+
+          # Deploy or upgrade the release
+          helm upgrade --install fn-posts ./fn-infra/helm/fn-posts \
+            --namespace ${{ steps.params.outputs.namespace }} \
+            --values ./fn-infra/helm/fn-posts/${{ steps.params.outputs.values_file }} \
+            --set image.tag=${{ needs.build-image.outputs.version }} \
+            --set image.repository=${{ env.GAR_LOCATION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.SERVICE }} \
+            --set-string image.digest=${{ needs.build-image.outputs.image-digest }} \
+            --set environment=${{ steps.params.outputs.environment }} \
+            --set appVersion=${{ needs.build-image.outputs.version }} \
+            --timeout 10m \
+            --wait \
+            --atomic \
+            --create-namespace
+
+          # Get service URL
+          SERVICE_IP=$(kubectl get svc fn-posts -n ${{ steps.params.outputs.namespace }} -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "pending")
+          echo "url=http://${SERVICE_IP}" >> $GITHUB_OUTPUT
+
+      - name: Verify deployment health
+        run: |
+          # Wait for deployment to be ready
+          kubectl rollout status deployment/fn-posts -n ${{ steps.params.outputs.namespace }} --timeout=5m
+
+          # Check pod status
+          kubectl get pods -n ${{ steps.params.outputs.namespace }} -l app.kubernetes.io/name=fn-posts
+
+          # Run health check
+          POD_NAME=$(kubectl get pods -n ${{ steps.params.outputs.namespace }} -l app.kubernetes.io/name=fn-posts -o jsonpath='{.items[0].metadata.name}')
+          kubectl exec -n ${{ steps.params.outputs.namespace }} $POD_NAME -- wget --spider -q http://localhost:8080/health || true
+
+      - name: Record deployment
+        if: success()
+        run: |
+          kubectl annotate deployment fn-posts -n ${{ steps.params.outputs.namespace }} \
+            deployment.kubernetes.io/revision-${{ github.run_number }}="${{ needs.build-image.outputs.version }}" \
+            deployment.kubernetes.io/github-sha="${{ github.sha }}" \
+            deployment.kubernetes.io/github-run="${{ github.run_id }}" \
+            deployment.kubernetes.io/deployed-by="${{ github.actor }}" \
+            deployment.kubernetes.io/deployed-at="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --overwrite
+
+  # Rollback Job
+  rollback:
+    name: Rollback Deployment
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.rollback == 'true'
+    steps:
+      - name: Checkout fn-infra repository
+        uses: actions/checkout@v4
+        with:
+          repository: findly-now/fn-infra
+          path: fn-infra
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
+
+      - name: Get GKE credentials
+        uses: google-github-actions/get-gke-credentials@v2
+        with:
+          cluster_name: ${{ env.GKE_CLUSTER }}
+          location: ${{ env.GAR_LOCATION }}
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v3
+        with:
+          version: ${{ env.HELM_VERSION }}
+
+      - name: Determine environment
+        id: params
+        run: |
+          ENV="${{ github.event.inputs.environment }}"
+          echo "environment=${ENV}" >> $GITHUB_OUTPUT
+          echo "namespace=findly-${ENV}" >> $GITHUB_OUTPUT
+
+      - name: Get rollback revision
+        id: rollback
+        run: |
+          # Get the previous revision
+          CURRENT_REVISION=$(helm list -n ${{ steps.params.outputs.namespace }} -o json | jq -r '.[] | select(.name=="fn-posts") | .revision')
+          PREVIOUS_REVISION=$((CURRENT_REVISION - 1))
+
+          echo "current_revision=${CURRENT_REVISION}" >> $GITHUB_OUTPUT
+          echo "previous_revision=${PREVIOUS_REVISION}" >> $GITHUB_OUTPUT
+
+          # Show history
+          echo "Helm deployment history:"
+          helm history fn-posts -n ${{ steps.params.outputs.namespace }}
+
+      - name: Perform rollback
+        run: |
+          helm rollback fn-posts ${{ steps.rollback.outputs.previous_revision }} \
+            -n ${{ steps.params.outputs.namespace }} \
+            --wait \
+            --timeout 10m
+
+      - name: Verify rollback
+        run: |
+          kubectl rollout status deployment/fn-posts -n ${{ steps.params.outputs.namespace }} --timeout=5m
+          kubectl get pods -n ${{ steps.params.outputs.namespace }} -l app.kubernetes.io/name=fn-posts
+
+  # Smoke Tests
+  smoke-tests:
+    name: Run Smoke Tests
+    runs-on: ubuntu-latest
+    needs: deploy
+    if: success()
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
+
+      - name: Get GKE credentials
+        uses: google-github-actions/get-gke-credentials@v2
+        with:
+          cluster_name: ${{ env.GKE_CLUSTER }}
+          location: ${{ env.GAR_LOCATION }}
+
+      - name: Determine environment
+        id: params
+        run: |
+          if [[ "${{ github.ref }}" == "refs/heads/main" ]] || [[ "${{ github.ref }}" == "refs/tags/v"* ]]; then
+            ENV="prod"
+          else
+            ENV="dev"
+          fi
+          echo "namespace=findly-${ENV}" >> $GITHUB_OUTPUT
+
+      - name: Run smoke tests
+        run: |
+          # Get service endpoint
+          SERVICE_URL=$(kubectl get svc fn-posts -n ${{ steps.params.outputs.namespace }} -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+
+          # Test health endpoint
+          curl -f http://${SERVICE_URL}/health || exit 1
+
+          # Test readiness endpoint
+          curl -f http://${SERVICE_URL}/ready || exit 1
+
+          # Test metrics endpoint
+          curl -f http://${SERVICE_URL}/metrics || exit 1
+
+          echo "✅ Smoke tests passed"
+
+  # Notification Job
+  notify:
+    name: Send Notifications
+    runs-on: ubuntu-latest
+    needs: [deploy, smoke-tests]
+    if: always()
+    steps:
+      - name: Determine status
+        id: status
+        run: |
+          if [[ "${{ needs.deploy.result }}" == "success" ]] && [[ "${{ needs.smoke-tests.result }}" == "success" ]]; then
+            STATUS="✅ Success"
+            COLOR="good"
+          elif [[ "${{ needs.deploy.result }}" == "skipped" ]]; then
+            STATUS="⏭️ Skipped"
+            COLOR="warning"
+          else
+            STATUS="❌ Failed"
+            COLOR="danger"
+          fi
+
+          echo "status=${STATUS}" >> $GITHUB_OUTPUT
+          echo "color=${COLOR}" >> $GITHUB_OUTPUT
+
+      - name: Send Slack notification
+        if: secrets.SLACK_WEBHOOK_URL != ''
+        uses: slackapi/slack-github-action@v1.24.0
+        with:
+          payload: |
+            {
+              "text": "fn-posts Deployment ${{ steps.status.outputs.status }}",
+              "attachments": [
+                {
+                  "color": "${{ steps.status.outputs.color }}",
+                  "fields": [
+                    {
+                      "title": "Service",
+                      "value": "fn-posts",
+                      "short": true
+                    },
+                    {
+                      "title": "Version",
+                      "value": "${{ needs.build-image.outputs.version }}",
+                      "short": true
+                    },
+                    {
+                      "title": "Environment",
+                      "value": "${{ needs.deploy.outputs.environment }}",
+                      "short": true
+                    },
+                    {
+                      "title": "Triggered by",
+                      "value": "${{ github.actor }}",
+                      "short": true
+                    },
+                    {
+                      "title": "Commit",
+                      "value": "<${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}|${{ github.sha }}>",
+                      "short": false
+                    },
+                    {
+                      "title": "Workflow",
+                      "value": "<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View Run>",
+                      "short": false
+                    }
+                  ]
+                }
+              ]
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}

@@ -115,8 +115,16 @@ func (t *EventTranslator) TranslatePostCreatedEvent(event ExternalPostCreatedEve
 
 	var organizationID *domain.OrganizationID
 	if event.Data.OrganizationID != nil && *event.Data.OrganizationID != "" {
-		orgID := domain.OrganizationID(*event.Data.OrganizationID)
+		orgID, err := domain.OrganizationIDFromString(*event.Data.OrganizationID)
+		if err != nil {
+			return nil, fmt.Errorf("invalid organization ID: %w", err)
+		}
 		organizationID = &orgID
+	}
+
+	userID, err := domain.UserIDFromString(event.Data.UserID)
+	if err != nil {
+		return nil, fmt.Errorf("invalid user ID: %w", err)
 	}
 
 	return &TranslatedPostData{
@@ -125,7 +133,7 @@ func (t *EventTranslator) TranslatePostCreatedEvent(event ExternalPostCreatedEve
 		Location:       location,
 		RadiusMeters:   t.normalizeRadius(event.Data.RadiusMeters),
 		Type:           postType,
-		CreatedBy:      domain.UserID(event.Data.UserID),
+		CreatedBy:      userID,
 		OrganizationID: organizationID,
 	}, nil
 }
@@ -138,8 +146,13 @@ func (t *EventTranslator) TranslatePhotosFromExternal(photos []ExternalPhotoData
 			return nil, fmt.Errorf("invalid photo data: %w", err)
 		}
 
+		photoID, err := domain.PhotoIDFromString(extPhoto.PhotoID)
+		if err != nil {
+			return nil, fmt.Errorf("invalid photo ID: %w", err)
+		}
+
 		photo := domain.ReconstructPhoto(
-			domain.PhotoID(extPhoto.PhotoID),
+			photoID,
 			postID,
 			extPhoto.URL,
 			extPhoto.ThumbnailURL,

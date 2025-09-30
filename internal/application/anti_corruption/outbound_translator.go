@@ -7,7 +7,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/jsarabia/fn-posts/internal/domain"
 )
 
@@ -98,13 +97,13 @@ func (t *OutboundEventTranslator) TranslatePostEvent(domainEvent *domain.PostEve
 		Version:   t.version,
 		Metadata: map[string]interface{}{
 			"tenant_id": domainEvent.TenantID,
-			"user_id":   string(domainEvent.UserID),
+			"user_id":   domainEvent.UserID.String(),
 		},
 	}
 
 	switch domainEvent.EventType {
 	case domain.EventTypePostCreated:
-		data, ok := domainEvent.Data.(*domain.PostCreatedEventData)
+		data, ok := domainEvent.Payload.(*domain.PostCreatedEventData)
 		if !ok {
 			return nil, fmt.Errorf("invalid data type for PostCreated event")
 		}
@@ -119,7 +118,7 @@ func (t *OutboundEventTranslator) TranslatePostEvent(domainEvent *domain.PostEve
 		}
 
 	case domain.EventTypePostUpdated:
-		data, ok := domainEvent.Data.(*domain.PostUpdatedEventData)
+		data, ok := domainEvent.Payload.(*domain.PostUpdatedEventData)
 		if !ok {
 			return nil, fmt.Errorf("invalid data type for PostUpdated event")
 		}
@@ -136,7 +135,7 @@ func (t *OutboundEventTranslator) TranslatePostEvent(domainEvent *domain.PostEve
 		}
 
 	case domain.EventTypePostResolved, domain.EventTypePostDeleted:
-		data, ok := domainEvent.Data.(*domain.PostStatusChangedEventData)
+		data, ok := domainEvent.Payload.(*domain.PostStatusChangedEventData)
 		if !ok {
 			return nil, fmt.Errorf("invalid data type for PostStatusChanged event")
 		}
@@ -149,7 +148,7 @@ func (t *OutboundEventTranslator) TranslatePostEvent(domainEvent *domain.PostEve
 		}
 
 	case domain.EventTypePhotoAdded, domain.EventTypePhotoRemoved:
-		data, ok := domainEvent.Data.(*domain.PhotoEventData)
+		data, ok := domainEvent.Payload.(*domain.PhotoEventData)
 		if !ok {
 			return nil, fmt.Errorf("invalid data type for Photo event")
 		}
@@ -171,7 +170,7 @@ func (t *OutboundEventTranslator) TranslatePostEvent(domainEvent *domain.PostEve
 func (t *OutboundEventTranslator) translatePostToExternal(post *domain.Post) (ExternalPostSchema, error) {
 	var organizationID *string
 	if post.OrganizationID() != nil {
-		orgID := string(*post.OrganizationID())
+		orgID := post.OrganizationID().String()
 		organizationID = &orgID
 	}
 
@@ -181,7 +180,7 @@ func (t *OutboundEventTranslator) translatePostToExternal(post *domain.Post) (Ex
 	}
 
 	return ExternalPostSchema{
-		PostID:      string(post.ID()),
+		PostID:      post.ID().String(),
 		Title:       post.Title(),
 		Description: post.Description(),
 		Location: ExternalLocationSchema{
@@ -191,7 +190,7 @@ func (t *OutboundEventTranslator) translatePostToExternal(post *domain.Post) (Ex
 		RadiusMeters:   post.RadiusMeters(),
 		Type:           string(post.PostType()),
 		Status:         string(post.Status()),
-		UserID:         string(post.CreatedBy()),
+		UserID:         post.CreatedBy().String(),
 		OrganizationID: organizationID,
 		CreatedAt:      post.CreatedAt(),
 		UpdatedAt:      post.UpdatedAt(),
@@ -202,7 +201,7 @@ func (t *OutboundEventTranslator) translatePostToExternal(post *domain.Post) (Ex
 
 func (t *OutboundEventTranslator) translatePhotoToExternal(photo *domain.Photo) ExternalPhotoSchema {
 	return ExternalPhotoSchema{
-		PhotoID:      string(photo.ID()),
+		PhotoID:      photo.ID().String(),
 		URL:          photo.URL(),
 		ThumbnailURL: photo.ThumbnailURL(),
 		Caption:      photo.Caption(),
@@ -277,7 +276,7 @@ func (p *AntiCorruptionEventPublisher) PublishEvent(ctx context.Context, domainE
 	topic := p.getTopicForEventType(domainEvent.EventType)
 
 	// Use post ID as partition key for ordering
-	key := string(domainEvent.PostID)
+	key := domainEvent.PostID.String()
 
 	// Publish to Kafka
 	if err := p.kafkaPublisher.PublishMessage(topic, key, eventJSON); err != nil {
@@ -288,20 +287,7 @@ func (p *AntiCorruptionEventPublisher) PublishEvent(ctx context.Context, domainE
 }
 
 func (p *AntiCorruptionEventPublisher) getTopicForEventType(eventType domain.EventType) string {
-	switch eventType {
-	case domain.EventTypePostCreated:
-		return "posts.created"
-	case domain.EventTypePostUpdated:
-		return "posts.updated"
-	case domain.EventTypePostResolved:
-		return "posts.resolved"
-	case domain.EventTypePostDeleted:
-		return "posts.deleted"
-	case domain.EventTypePhotoAdded:
-		return "posts.photos.added"
-	case domain.EventTypePhotoRemoved:
-		return "posts.photos.removed"
-	default:
-		return "posts.events"
-	}
+	// All post events use the standardized posts.events topic
+	// as specified in the architecture documentation
+	return "posts.events"
 }

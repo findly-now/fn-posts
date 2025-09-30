@@ -2,6 +2,7 @@ package dto
 
 import (
 	"database/sql"
+	"fmt"
 	"time"
 
 	"github.com/jsarabia/fn-posts/internal/domain"
@@ -20,8 +21,13 @@ type PhotoDTO struct {
 }
 
 func (dto *PhotoDTO) ToDomain() (*domain.Photo, error) {
+	postID, err := domain.PostIDFromString(dto.PostID)
+	if err != nil {
+		return nil, fmt.Errorf("invalid post ID: %w", err)
+	}
+
 	req := domain.CreatePhotoRequest{
-		PostID:       domain.PostID(dto.PostID),
+		PostID:       postID,
 		URL:          dto.URL,
 		Caption:      dto.Caption,
 		DisplayOrder: dto.DisplayOrder,
@@ -29,14 +35,19 @@ func (dto *PhotoDTO) ToDomain() (*domain.Photo, error) {
 		SizeBytes:    dto.SizeBytes,
 	}
 
-	photo, err := domain.NewPhoto(req)
+	_, err = domain.NewPhoto(req)
 	if err != nil {
 		return nil, err
 	}
 
+	photoID, err := domain.PhotoIDFromString(dto.ID)
+	if err != nil {
+		return nil, fmt.Errorf("invalid photo ID: %w", err)
+	}
+
 	reconstructedPhoto := domain.ReconstructPhoto(
-		domain.PhotoID(dto.ID),
-		domain.PostID(dto.PostID),
+		photoID,
+		postID,
 		dto.URL,
 		dto.ThumbnailURL.String,
 		dto.Caption,
@@ -51,8 +62,8 @@ func (dto *PhotoDTO) ToDomain() (*domain.Photo, error) {
 
 func FromDomainPhoto(photo *domain.Photo) *PhotoDTO {
 	dto := &PhotoDTO{
-		ID:           string(photo.ID()),
-		PostID:       string(photo.PostID()),
+		ID:           photo.ID().String(),
+		PostID:       photo.PostID().String(),
 		URL:          photo.URL(),
 		Caption:      photo.Caption(),
 		DisplayOrder: photo.DisplayOrder(),

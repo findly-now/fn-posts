@@ -67,8 +67,8 @@ RUN apk add --no-cache \
     postgresql-client \
     redis
 
-# Install air for hot reload
-RUN go install github.com/air-verse/air@latest
+# Install air for hot reload (disabled for now due to version compatibility)
+# RUN go install github.com/air-verse/air@latest
 
 # Create non-root user for development
 RUN addgroup -g 1001 -S appgroup && \
@@ -100,5 +100,5 @@ EXPOSE 9090
 HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
   CMD wget --no-verbose --tries=1 --spider http://localhost:8080/health || exit 1
 
-# Development command with hot reload (using default config)
-CMD ["air"]
+# Development command (direct run without hot reload for now)
+CMD ["go", "run", "cmd/main.go"]

@@ -86,8 +86,8 @@ func Load() *Config {
 		Port:        getEnv("PORT", "8080"),
 		Environment: getEnv("ENVIRONMENT", "development"),
 
-		// Database configuration (Supabase PostgreSQL)
-		PostgresURL: getEnv("POSTGRES_URL", "postgres://postgres:postgres@localhost:5432/posts_db?sslmode=disable"),
+		// Database configuration (Supabase PostgreSQL) - Support both DATABASE_URL and POSTGRES_URL for compatibility
+		PostgresURL: getEnvWithFallback("DATABASE_URL", "POSTGRES_URL", "postgres://postgres:postgres@localhost:5432/posts_db?sslmode=disable"),
 		SupabaseConfig: SupabaseConfig{
 			URL:            getEnv("SUPABASE_URL", ""),
 			AnonKey:        getEnv("SUPABASE_ANON_KEY", ""),
@@ -145,6 +145,16 @@ func Load() *Config {
 
 func getEnv(key, defaultValue string) string {
 	if value := os.Getenv(key); value != "" {
+		return value
+	}
+	return defaultValue
+}
+
+func getEnvWithFallback(primaryKey, fallbackKey, defaultValue string) string {
+	if value := os.Getenv(primaryKey); value != "" {
+		return value
+	}
+	if value := os.Getenv(fallbackKey); value != "" {
 		return value
 	}
 	return defaultValue

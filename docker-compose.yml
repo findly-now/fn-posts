@@ -23,27 +23,34 @@ services:
   # - Built-in auth and real-time features
   # - Global edge network
   # - Configured via POSTGRES_URL environment variable
-  postgres:
+  posts-postgres:
     image: postgis/postgis:15-3.3
-    platform: linux/amd64
-    container_name: posts-postgres
+    container_name: posts-postgres-isolated
     environment:
       POSTGRES_DB: posts_db
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
+      POSTGRES_USER: posts_user
+      POSTGRES_PASSWORD: posts_password
       POSTGRES_HOST_AUTH_METHOD: trust
     ports:
       - "5432:5432"
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - posts_postgres_data:/var/lib/postgresql/data
       - ./migrations:/docker-entrypoint-initdb.d
     networks:
       - posts-network
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d posts_db"]
+      test: ["CMD-SHELL", "pg_isready -U posts_user -d posts_db"]
       interval: 10s
       timeout: 5s
       retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
+        reservations:
+          memory: 128M
+          cpus: '0.25'
 
   # =============================================================================
   # STORAGE: MinIO S3-Compatible Storage (LOCAL DEVELOPMENT ONLY)
@@ -91,40 +98,36 @@ services:
       - posts-network
 
   # =============================================================================
-  # EVENT STREAMING: Kafka with Zookeeper (LOCAL DEVELOPMENT ONLY)
+  # EVENT STREAMING: Kafka with KRaft (LOCAL DEVELOPMENT ONLY)
   # =============================================================================
   # Production uses Confluent Cloud with:
   # - Fully managed Kafka with auto-scaling
   # - Built-in schema registry
   # - Multi-region replication
   # - Configured via KAFKA_* environment variables
-  zookeeper:
-    image: confluentinc/cp-zookeeper:7.4.0
-    platform: linux/amd64
-    container_name: posts-zookeeper
-    environment:
-      ZOOKEEPER_CLIENT_PORT: 2181
-      ZOOKEEPER_TICK_TIME: 2000
-    networks:
-      - posts-network
-
   kafka:
-    image: confluentinc/cp-kafka:7.4.0
-    platform: linux/amd64
+    image: confluentinc/cp-kafka:7.5.0
     container_name: posts-kafka
-    depends_on:
-      - zookeeper
     ports:
       - "9092:9092"
     environment:
-      KAFKA_BROKER_ID: 1
-      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      # KRaft Configuration (no Zookeeper!)
+      CLUSTER_ID: 'MkU3OEVBNTcwNTJENDM2Qk'
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: 'broker,controller'
+      KAFKA_CONTROLLER_QUORUM_VOTERS: '1@kafka:29093'
+      KAFKA_CONTROLLER_LISTENER_NAMES: 'CONTROLLER'
+
+      # Listeners
+      KAFKA_LISTENERS: 'PLAINTEXT://kafka:29092,CONTROLLER://kafka:29093,PLAINTEXT_HOST://0.0.0.0:9092'
+      KAFKA_ADVERTISED_LISTENERS: 'PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092'
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: 'CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT'
+
+      KAFKA_LOG_DIRS: '/tmp/kraft-combined-logs'
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'true'
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
-      KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'true'
     networks:
       - posts-network
     healthcheck:
@@ -144,7 +147,6 @@ services:
     environment:
       KAFKA_CLUSTERS_0_NAME: local
       KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
-      KAFKA_CLUSTERS_0_ZOOKEEPER: zookeeper:2181
     networks:
       - posts-network
 
@@ -203,7 +205,7 @@ services:
   #     # =============================================================================
   #     # LOCAL DEVELOPMENT CONFIGURATION
   #     # =============================================================================
-  #     POSTGRES_URL: postgres://postgres:postgres@postgres:5432/posts_db?sslmode=disable
+  #     DATABASE_URL: postgres://posts_user:posts_password@posts-postgres:5432/posts_db?sslmode=disable
   #     MINIO_ENDPOINT: minio:9000
   #     MINIO_ACCESS_KEY: minioadmin
   #     MINIO_SECRET_KEY: minioadmin
@@ -235,9 +237,12 @@ services:
   #   #   - ./service-account.json:/app/service-account.json:ro
 
 volumes:
-  postgres_data:
+  posts_postgres_data:
+    name: fn-posts-postgres-data
   minio_data:
+    name: fn-posts-minio-data
   redis_data:
+    name: fn-posts-redis-data
 
 networks:
   posts-network:

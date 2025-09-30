@@ -5,24 +5,38 @@ import (
 	"fmt"
 	"log"
 
+	"github.com/google/uuid"
 	"github.com/jsarabia/fn-posts/internal/domain"
 )
 
 type PostService struct {
-	postRepo       domain.PostRepository
-	photoRepo      domain.PhotoRepository
-	eventPublisher domain.EventPublisher
+	postRepo        domain.PostRepository
+	photoRepo       domain.PhotoRepository
+	userContextRepo domain.UserContextRepository
+	orgContextRepo  domain.OrganizationContextRepository
+	eventPublisher  domain.EventPublisher
+}
+
+// PostServiceConfig holds configuration for enhanced fat event publishing
+type PostServiceConfig struct {
+	EnableCorrelationIDs bool
+	DefaultPrivacyLevel  string
+	AIProcessingEnabled  bool
 }
 
 func NewPostService(
 	postRepo domain.PostRepository,
 	photoRepo domain.PhotoRepository,
+	userContextRepo domain.UserContextRepository,
+	orgContextRepo domain.OrganizationContextRepository,
 	eventPublisher domain.EventPublisher,
 ) *PostService {
 	return &PostService{
-		postRepo:       postRepo,
-		photoRepo:      photoRepo,
-		eventPublisher: eventPublisher,
+		postRepo:        postRepo,
+		photoRepo:       photoRepo,
+		userContextRepo: userContextRepo,
+		orgContextRepo:  orgContextRepo,
+		eventPublisher:  eventPublisher,
 	}
 }
 
@@ -36,19 +50,70 @@ func (s *PostService) CreatePost(ctx context.Context, title, description string,
 		return nil, fmt.Errorf("failed to save post: %w", err)
 	}
 
-	event := domain.NewPostEvent(
+	// Generate correlation ID for tracing
+	correlationID := uuid.New().String()
+
+	// Publish fat PostCreated event with complete context
+	if err := s.publishPostCreatedEvent(ctx, post, correlationID); err != nil {
+		log.Printf("Failed to publish post created event: %v", err)
+		// Don't fail the operation for event publishing errors
+	}
+
+	return post, nil
+}
+
+// publishPostCreatedEvent creates and publishes a complete fat event for post creation
+func (s *PostService) publishPostCreatedEvent(ctx context.Context, post *domain.Post, correlationID string) error {
+	// Get privacy-safe user context
+	userContext, err := s.userContextRepo.GetPrivacySafeUser(ctx, post.CreatedBy())
+	if err != nil {
+		log.Printf("Warning: failed to get user context for post creation event: %v", err)
+		// Create minimal user context
+		userContext = &domain.PrivacySafeUser{
+			UserID:      post.CreatedBy(),
+			DisplayName: "Unknown User",
+			Preferences: domain.UserPreferences{
+				Timezone:             "UTC",
+				Language:             "en",
+				NotificationChannels: []domain.NotificationChannel{},
+			},
+		}
+	}
+
+	// Get organization context if applicable
+	var orgContext *domain.OrganizationData
+	if post.OrganizationID() != nil {
+		orgData, err := s.orgContextRepo.GetOrganizationData(ctx, *post.OrganizationID())
+		if err != nil {
+			log.Printf("Warning: failed to get organization context for post creation event: %v", err)
+		} else {
+			orgContext = orgData
+		}
+	}
+
+	// Create fat event payload
+	eventData := &domain.PostCreatedEventData{
+		Post:         post.ToPostData(),
+		User:         *userContext,
+		Organization: orgContext,
+		AIAnalysis:   domain.CreateAIMetadataPlaceholder(),
+		Triggers:     domain.CreateEventTriggersForPostCreated(),
+	}
+
+	// Create event with correlation ID
+	event := domain.NewPostEventWithCorrelation(
 		domain.EventTypePostCreated,
 		post.ID(),
 		post.CreatedBy(),
 		post.OrganizationID(),
-		&domain.PostCreatedEventData{Post: post},
+		eventData,
+		correlationID,
 	)
 
-	if err := s.eventPublisher.PublishEvent(ctx, event); err != nil {
-		log.Printf("Failed to publish post created event: %v", err)
-	}
+	// Add privacy context
+	event.Privacy = domain.CreatePrivacyContext(nil, "organization_members")
 
-	return post, nil
+	return s.eventPublisher.PublishEvent(ctx, event)
 }
 
 func (s *PostService) GetPostByID(ctx context.Context, id domain.PostID) (*domain.Post, error) {
@@ -119,7 +184,12 @@ func (s *PostService) UpdatePost(ctx context.Context, id domain.PostID, title, d
 		post.CreatedBy(),
 		post.OrganizationID(),
 		&domain.PostUpdatedEventData{
-			Post:     post,
+			Post:     post.ToPostData(),
+			User:     domain.ToPrivacySafeUser(post.CreatedBy(), "User Name", domain.UserPreferences{
+				Timezone: "UTC",
+				Language: "en",
+				NotificationChannels: []domain.NotificationChannel{domain.NotificationChannelEmail},
+			}, nil),
 			Changes:  changes,
 			Previous: previousData,
 		},
@@ -164,7 +234,12 @@ func (s *PostService) UpdatePostStatus(ctx context.Context, id domain.PostID, ne
 		post.CreatedBy(),
 		post.OrganizationID(),
 		&domain.PostStatusChangedEventData{
-			PostID:         post.ID(),
+			Post:           post.ToPostData(),
+			User:           domain.ToPrivacySafeUser(post.CreatedBy(), "User Name", domain.UserPreferences{
+				Timezone: "UTC",
+				Language: "en",
+				NotificationChannels: []domain.NotificationChannel{domain.NotificationChannelEmail},
+			}, nil),
 			NewStatus:      newStatus,
 			PreviousStatus: previousStatus,
 		},
@@ -193,7 +268,12 @@ func (s *PostService) DeletePost(ctx context.Context, id domain.PostID) error {
 		post.CreatedBy(),
 		post.OrganizationID(),
 		&domain.PostStatusChangedEventData{
-			PostID:         post.ID(),
+			Post:           post.ToPostData(),
+			User:           domain.ToPrivacySafeUser(post.CreatedBy(), "User Name", domain.UserPreferences{
+				Timezone: "UTC",
+				Language: "en",
+				NotificationChannels: []domain.NotificationChannel{domain.NotificationChannelEmail},
+			}, nil),
 			NewStatus:      domain.PostStatusDeleted,
 			PreviousStatus: post.Status(),
 		},
@@ -236,14 +316,28 @@ func (s *PostService) AddPhotoToPost(ctx context.Context, postID domain.PostID, 
 		return nil, fmt.Errorf("failed to update post: %w", err)
 	}
 
+	// Get privacy-safe user context for fat events
+	_, err = s.userContextRepo.GetPrivacySafeUser(ctx, post.CreatedBy())
+	if err != nil {
+		// Log warning but don't fail - continue with event without user context
+		log.Printf("Warning: failed to get user context for photo added event: %v", err)
+	}
+
+	// Publish fat PhotoAdded event with complete context
 	event := domain.NewPostEvent(
 		domain.EventTypePhotoAdded,
 		post.ID(),
 		post.CreatedBy(),
 		post.OrganizationID(),
-		&domain.PhotoEventData{
-			PostID: post.ID(),
-			Photo:  photo,
+		&domain.PhotoAddedEventData{
+			Post:                post.ToPostData(),
+			Photo:               photo.ToPhotoData(),
+			User:                domain.ToPrivacySafeUser(post.CreatedBy(), "User Name", domain.UserPreferences{
+				Timezone: "UTC",
+				Language: "en",
+				NotificationChannels: []domain.NotificationChannel{domain.NotificationChannelEmail},
+			}, nil),
+			AIProcessingTrigger: true, // Default to trigger AI processing
 		},
 	)
 
@@ -290,9 +384,14 @@ func (s *PostService) RemovePhotoFromPost(ctx context.Context, postID domain.Pos
 		post.ID(),
 		post.CreatedBy(),
 		post.OrganizationID(),
-		&domain.PhotoEventData{
-			PostID: post.ID(),
-			Photo:  photo,
+		&domain.PhotoRemovedEventData{
+			Post:  post.ToPostData(),
+			Photo: photo.ToPhotoData(),
+			User:  domain.ToPrivacySafeUser(post.CreatedBy(), "User Name", domain.UserPreferences{
+				Timezone: "UTC",
+				Language: "en",
+				NotificationChannels: []domain.NotificationChannel{domain.NotificationChannelEmail},
+			}, nil),
 		},
 	)
 

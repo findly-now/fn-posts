@@ -23,13 +23,17 @@ func InitializeApplication(db *sql.DB, cfg *config.Config) (*Application, error)
 	postRepository := providePostRepository(postgresPostRepository)
 	postgresPhotoRepository := repository.NewPostgresPhotoRepository(db)
 	photoRepository := providePhotoRepository(postgresPhotoRepository)
+	mockUserContextRepository := repository.NewMockUserContextRepository()
+	userContextRepository := provideUserContextRepository(mockUserContextRepository)
+	mockOrganizationContextRepository := repository.NewMockOrganizationContextRepository()
+	organizationContextRepository := provideOrganizationContextRepository(mockOrganizationContextRepository)
 	kafkaConfig := provideKafkaConfig(cfg)
 	eventService, err := service.NewEventService(kafkaConfig)
 	if err != nil {
 		return nil, err
 	}
 	eventPublisher := provideEventPublisher(eventService)
-	postService := service.NewPostService(postRepository, photoRepository, eventPublisher)
+	postService := service.NewPostService(postRepository, photoRepository, userContextRepository, organizationContextRepository, eventPublisher)
 	storageConfig := provideStorageConfig(cfg)
 	storageService, err := service.NewStorageService(storageConfig)
 	if err != nil {
@@ -38,10 +42,24 @@ func InitializeApplication(db *sql.DB, cfg *config.Config) (*Application, error)
 	storageInterface := provideStorageInterface(storageService)
 	postHandler := handler.NewPostHandler(postService, storageInterface)
 	photoHandler := handler.NewPhotoHandler(postService, storageInterface)
+	postgresContactExchangeRepository := repository.NewPostgresContactExchangeRepository(db)
+	contactExchangeRepository := provideContactExchangeRepository(postgresContactExchangeRepository)
+	postgresKeyRepository := repository.NewPostgresKeyRepository(db)
+	keyRepository := provideKeyRepository(postgresKeyRepository)
+	postgresEncryptionAuditLogger := repository.NewPostgresEncryptionAuditLogger(db)
+	encryptionAuditLogger := provideEncryptionAuditLogger(postgresEncryptionAuditLogger)
+	rsaEncryptionService, err := domain.NewRSAEncryptionService(keyRepository, encryptionAuditLogger)
+	if err != nil {
+		return nil, err
+	}
+	encryptionService := provideEncryptionService(rsaEncryptionService)
+	contactExchangeService := service.NewContactExchangeService(contactExchangeRepository, postRepository, userContextRepository, eventPublisher, encryptionService, encryptionAuditLogger)
+	contactExchangeHandler := handler.NewContactExchangeHandler(contactExchangeService)
 	application := &Application{
-		PostHandler:  postHandler,
-		PhotoHandler: photoHandler,
-		Config:       cfg,
+		PostHandler:            postHandler,
+		PhotoHandler:           photoHandler,
+		ContactExchangeHandler: contactExchangeHandler,
+		Config:                 cfg,
 	}
 	return application, nil
 }
@@ -50,9 +68,10 @@ func InitializeApplication(db *sql.DB, cfg *config.Config) (*Application, error)
 
 // Application represents the complete application with all dependencies
 type Application struct {
-	PostHandler  *handler.PostHandler
-	PhotoHandler *handler.PhotoHandler
-	Config       *config.Config
+	PostHandler            *handler.PostHandler
+	PhotoHandler           *handler.PhotoHandler
+	ContactExchangeHandler *handler.ContactExchangeHandler
+	Config                 *config.Config
 }
 
 func provideStorageConfig(cfg *config.Config) config.StorageConfig {
@@ -77,4 +96,28 @@ func providePhotoRepository(repo *repository.PostgresPhotoRepository) domain.Pho
 
 func provideEventPublisher(eventService *service.EventService) domain.EventPublisher {
 	return eventService
+}
+
+func provideContactExchangeRepository(repo *repository.PostgresContactExchangeRepository) domain.ContactExchangeRepository {
+	return repo
+}
+
+func provideUserContextRepository(repo *repository.MockUserContextRepository) domain.UserContextRepository {
+	return repo
+}
+
+func provideOrganizationContextRepository(repo *repository.MockOrganizationContextRepository) domain.OrganizationContextRepository {
+	return repo
+}
+
+func provideEncryptionService(encryptionService *domain.RSAEncryptionService) domain.EncryptionService {
+	return encryptionService
+}
+
+func provideEncryptionAuditLogger(logger *repository.PostgresEncryptionAuditLogger) domain.EncryptionAuditLogger {
+	return logger
+}
+
+func provideKeyRepository(repo *repository.PostgresKeyRepository) domain.KeyRepository {
+	return repo
 }
